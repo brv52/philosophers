@@ -55,7 +55,7 @@ typedef struct	philo
 	int			id;
 	int			meals;
 	t_thread	thread;
-	t_timer		meal_stamp;
+	long		meal_stamp;
 	t_table		*table;
 }	t_philo;
 
@@ -63,18 +63,17 @@ typedef struct	table
 {
 	int			props[6];
 	int			t_status;
-	int			barier;
+	int			active;
 	t_philo		*philos;
 	t_mutex		*forks;
-	t_thread	heartbeat;
 	t_mutex		table_mtx;
-	t_mutex		hb_mtx;
+	t_mutex		philo_mtx;
 	t_mutex		print_mtx;
-	t_timer		start_stamp;
+	long		start_stamp;
 }	t_table;
 
 int		is_num(char c);
-int	precise_sleep(t_table *table, long ms);
+int		msleep(t_table *table, long ms);
 int		is_whitespace(char c);
 void	threads_wait(t_table *table);
 void	destroy_table(t_table *table);
@@ -83,10 +82,10 @@ void	mtx_op(t_table *table, t_mutex *mtx, t_op op);
 void	destroy_table(t_table *table);
 void	table_create(t_table *table, int argc, char **argv);
 void	mtx_setval(t_table *table, t_mutex *mtx, int *val, int n_val);
-int	mtx_getval(t_table *table, t_mutex *mtx, int *val);
-long	get_time_diff(t_timer *beg, t_timer *end);
-void	*hb_routine(void *arg);
+int		mtx_getval(t_table *table, t_mutex *mtx, int *val);
 void	*philo_routine(void *arg);
 void	print_status(t_table *table, int idx, t_action action);
+int		is_stopped(t_table *table);
+long	gettime_ms();
 
 #endif

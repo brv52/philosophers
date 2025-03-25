@@ -1,2148 +1,0 @@
-=== Makefile ===
-CC = cc
-FLAGS = -Wall -Wextra -Werror
-SAN = -fsanitize=thread -g
-
-TARGET = philo
-SRCS = $(shell ls *.c | tr '\n' ' ')
-OBJS = $(SRCS:.c=.o)
-
-all: $(TARGET)
-
-$(TARGET): $(OBJS)
-	$(CC) $(FLAGS) $(SAN) -o $(TARGET) $(OBJS)
-
-%.o: %.c
-	$(CC) $(FLAGS) $(SAN) -c $< -o $@
-
-clean:
-	rm -f $(OBJS)
-
-fclean: clean
-	rm -f $(TARGET)
-
-re: fclean all
-
-
-=== asd ===
-#include "philo.h"
-
-int	is_num(char c)
-{
-	return (c >= '0' && c <= '9');
-}
-
-int	is_whitespace(char c)
-{
-	return (c == ' ' || (c >= 9 && c <= 13));
-}
-
-void	exit_error(t_table *table, char *msg)
-{
-	printf("error: %s\n", msg);
-	if (table)
-		destroy_table(table);
-	exit(EXIT_FAILURE);
-}
-
-void	print_status(t_table *table, int idx, t_action action)
-{
-	mtx_op(table, &table->print_mtx, LK);
-	if (action == FORK)
-		printf("%ld %d has taken a fork\n", get_time_diff(&table->start_stamp, NULL), idx);
-	else if (action == EAT)
-		printf("%ld %d is eating\n", get_time_diff(&table->start_stamp, NULL), idx);
-	else if (action == SLEEP)
-		printf("%ld %d is sleeping\n", get_time_diff(&table->start_stamp, NULL), idx);
-	else if (action == THINK)
-		printf("%ld %d is thinking\n", get_time_diff(&table->start_stamp, NULL), idx);
-	else
-		printf("%ld %d died\n", get_time_diff(&table->start_stamp, NULL), idx);
-	mtx_op(table, &table->print_mtx, ULK);
-}
-
-// long	get_ms(t_timer *time)
-// {
-// 	return (time->tv_sec * 1000 + time->tv_usec / 1000);
-// }
-
-// void	ft_usleep(int ms)
-// {
-// 	long	beg;
-// 	t_timer	tmp;
-
-// 	gettimeofday(&tmp, NULL);
-// 	beg = get_ms(&tmp);
-
-// }
-#include "philo.h"
-
-int	main(int argc, char **argv)
-{
-	t_table	table;
-
-	table_create(&table, argc, argv);
-	for (int i = 0; i < table.props[P_NUM]; i++)
-		pthread_create(&table.philos[i].thread, NULL, philo_routine, &table.philos[i]);
-	pthread_create(&table.heartbeat, NULL, hb_routine, &table);
-	table.t_status = 2;
-	destroy_table(&table);
-}
-#include "philo.h"
-
-void	mtx_op(t_table *table, t_mutex *mtx, t_op op)
-{
-	if (!table || !mtx)
-		exit_error(table, "mtx_op error");
-	if (op == CRT && pthread_mutex_init(mtx, NULL) != 0)
-		exit_error(table, "mtx_init error");
-	else if (op == DST && pthread_mutex_destroy(mtx) != 0)
-		exit_error(table, "mtx_destroy error\n");
-	else if (op == LK && pthread_mutex_lock(mtx) != 0)
-		exit_error(table, "mtx_lock error\n");
-	else if (op == ULK && pthread_mutex_unlock(mtx) != 0)
-		exit_error(table, "mtx_unlock error\n");
-}
-
-void	mtx_setval(t_table *table, t_mutex *mtx, int *val, int n_val)
-{
-	mtx_op(table, mtx, LK);
-	*val = n_val;
-	mtx_op(table, mtx, ULK);
-}
-int	mtx_getval(t_table *table, t_mutex *mtx, int *val)
-{
-	int	res;
-
-	mtx_op(table, mtx, LK);
-	res = *val;
-	mtx_op(table, mtx, ULK);
-	return (res);
-}
-#include "philo.h"
-
-static void	philo_wait_start(t_table *table, t_philo *philo)
-{
-	mtx_op(table, &table->table_mtx, LK);
-	table->barier += 1;
-	if (table->barier >= table->props[P_NUM])
-		gettimeofday(&table->start_stamp, NULL);
-	mtx_op(table, &table->table_mtx, ULK);
-	while (1)
-	{
-		mtx_op(table, &table->table_mtx, LK);
-		if (table->barier >= table->props[P_NUM])
-		{
-			philo->meal_stamp = table->start_stamp;
-			mtx_op(table, &table->table_mtx, ULK);
-			break;
-		}
-		mtx_op(table, &table->table_mtx, ULK);
-	}
-}
-
-void	*hb_routine(void *arg)
-{
-	t_table	*table;
-	int		c_philo;
-
-	table = (t_table *)arg;
-	while (1)
-	{
-		mtx_op(table, &table->table_mtx, LK);
-		if (table->barier >= table->props[P_NUM])
-		{
-			mtx_op(table, &table->table_mtx, ULK);
-			break;
-		}
-		mtx_op(table, &table->table_mtx, ULK);
-	}
-	while (1)
-	{
-		int	dead;
-		int	fed;
-		fed = 0;
-		c_philo = 0;
-		while (c_philo < table->props[P_NUM])
-		{
-			mtx_op(table, &table->hb_mtx, LK);
-			dead = (get_time_diff(&table->philos[c_philo].meal_stamp, NULL) >= table->props[TTD]);
-			fed += (table->props[MEALS] != -1 && table->philos[c_philo].meals >= table->props[MEALS]);
-			mtx_op(table, &table->hb_mtx, ULK);
-			if (dead)
-			{
-				mtx_setval(table, &table->table_mtx, &table->barier, 0);
-				print_status(table, c_philo + 1, DIE);
-				return (NULL);
-			}
-			c_philo += 1;
-		}
-		if (fed >= table->props[P_NUM])
-		{
-			mtx_setval(table, &table->table_mtx, &table->barier, 0);
-			return (NULL);
-		}
-		if (mtx_getval(table, &table->table_mtx, &table->barier) == 0)
-			break ;
-	}
-	return (NULL);
-}
-
-static int	ph_action(t_table *table, t_action a_type)
-{
-	int	time;
-	int	s_time;
-	int	delta;
-
-	if (a_type == EAT)
-		time = table->props[TTE];
-	else if (a_type == SLEEP)
-		time = table->props[TTS];
-	else if (a_type == THINK)
-		time = table->props[TTT];
-	else
-		time = 0;
-	s_time = 0;
-	delta = 10;
-	while (s_time < time)
-	{
-		if (mtx_getval(table, &table->table_mtx, &table->barier) == 0)
-			return (1);
-		usleep(delta * 1000);
-		s_time += delta;
-	}
-	return (0);
-}
-
-static int	ph_eat(t_table *table, t_philo *philo)
-{
-	int	act_res;
-
-	if (philo->id % 2 == 0)
-	{
-		mtx_op(table, &table->forks[philo->id % table->props[P_NUM]], LK);
-		if (mtx_getval(table, &table->table_mtx, &table->barier) == 0)
-		{
-			mtx_op(table, &table->forks[philo->id % table->props[P_NUM]], ULK);
-			return (1);
-		}
-		print_status(table, philo->id, FORK);
-		mtx_op(table, &table->forks[philo->id - 1], LK);
-		if (mtx_getval(table, &table->table_mtx, &table->barier) == 0)
-		{
-			mtx_op(table, &table->forks[philo->id % table->props[P_NUM]], ULK);
-			mtx_op(table, &table->forks[philo->id - 1], ULK);
-			return (1);
-		}
-		print_status(table, philo->id, FORK);
-	}
-	else
-	{
-		mtx_op(table, &table->forks[philo->id - 1], LK);
-		if (mtx_getval(table, &table->table_mtx, &table->barier) == 0)
-		{
-			mtx_op(table, &table->forks[philo->id - 1], ULK);
-			return (1);
-		}
-		print_status(table, philo->id, FORK);
-		mtx_op(table, &table->forks[philo->id % table->props[P_NUM]], LK);
-		if (mtx_getval(table, &table->table_mtx, &table->barier) == 0)
-		{
-			mtx_op(table, &table->forks[philo->id - 1], ULK);
-			mtx_op(table, &table->forks[philo->id % table->props[P_NUM]], ULK);
-			return (1);
-		}
-		print_status(table, philo->id, FORK);
-	}
-	mtx_op(table, &table->hb_mtx, LK);
-	gettimeofday(&philo->meal_stamp, NULL);
-	philo->meals += 1;
-	mtx_op(table, &table->hb_mtx, ULK);
-	print_status(table, philo->id, EAT);
-	act_res = ph_action(table, EAT);
-	mtx_op(table, &table->forks[philo->id - 1], ULK);
-	mtx_op(table, &table->forks[philo->id % table->props[P_NUM]], ULK);
-	return (act_res);
-}
-
-void	*philo_routine(void *arg)
-{
-	t_philo	*philo;
-	t_table	*table;
-
-	philo = (t_philo *)arg;
-	table = philo->table;
-	philo_wait_start(table, philo);
-	while (1)
-	{
-		if (ph_eat(table, philo) != 0)
-			return (NULL);
-		print_status(table, philo->id, SLEEP);
-		if (ph_action(table, SLEEP) != 0)
-			return (NULL);
-		print_status(table, philo->id, THINK);
-	}
-	return (NULL);
-}
-#include "philo.h"
-
-static long	ft_atoi(t_table *table, char *str)
-{
-	long	res;
-
-	if (!str || !*str)
-		exit_error(table, "args error");
-	while (*str && is_whitespace(*str))
-		str += 1;
-	if (*str && *str == '-')
-		exit_error(table, "args error");
-	else if (*str && *str == '+')
-		str += 1;
-	res = 0;
-	while (*str && is_num(*str))
-	{
-		res = res * 10 + (*str - '0');
-		str += 1;
-	}
-	if (res > INT_MAX)
-		exit_error(table, "args error");
-	return (res);
-}
-static void	init_setup(t_table *table)
-{
-	int	c_idx;
-
-	c_idx = 0;
-	while (c_idx < table->props[P_NUM])
-	{
-		table->philos[c_idx].id = c_idx + 1;
-		table->philos[c_idx].table = table;
-		table->philos[c_idx].meals = 0;
-		mtx_op(table, &table->forks[c_idx], CRT);
-		c_idx += 1;
-	}
-}
-
-void	table_create(t_table *table, int argc, char **argv)
-{
-	int	c_arg;
-
-	table->t_status = 0;
-	if (argc < 5 || argc > 6)
-		exit_error(NULL, "args error");
-	c_arg = 1;
-	while (c_arg < argc)
-	{
-		table->props[c_arg - 1] = ft_atoi(NULL, argv[c_arg]);
-		c_arg += 1;
-	}
-	if (argc == 5)
-		table->props[MEALS] = -1;
-	table->barier = 0;
-	table->philos = malloc(table->props[P_NUM] * sizeof(t_philo));
-	table->forks = malloc(table->props[P_NUM] * sizeof(t_mutex));
-	init_setup(table);
-	mtx_op(table, &table->table_mtx, CRT);
-	mtx_op(table, &table->hb_mtx, CRT);
-	mtx_op(table, &table->print_mtx, CRT);
-	table->t_status = 1;
-}
-void	destroy_table(t_table *table)
-{
-	int	c_fork;
-
-	threads_wait(table);
-	c_fork = 0;
-	while (c_fork < table->props[P_NUM])
-	{
-		mtx_op(table, &table->forks[c_fork], DST);
-		c_fork += 1;
-	}
-	mtx_op(table, &table->hb_mtx, DST);
-	mtx_op(table, &table->print_mtx, DST);
-	mtx_op(table, &table->table_mtx, DST);
-	free(table->philos);
-	free(table->forks);
-}
-#include "philo.h"
-
-void	threads_wait(t_table *table)
-{
-	int	c_thread;
-
-	c_thread = 0;
-	if (table->t_status > 1)
-	{
-		while (c_thread < table->props[P_NUM])
-		{
-			pthread_join(table->philos[c_thread].thread, NULL);
-			c_thread += 1;
-		}
-		pthread_join(table->heartbeat, NULL);
-	}
-}
-#include "philo.h"
-
-long	get_time_diff(t_timer *beg, t_timer *end)
-{
-	t_timer	tmp;
-	long	s_diff;
-	long	us_diff;
-
-	if (!end)
-	{
-		gettimeofday(&tmp, NULL);
-		end = &tmp;
-	}
-	s_diff = end->tv_sec - beg->tv_sec;
-	us_diff = end->tv_usec - beg->tv_usec;
-	return (s_diff * 1000 + us_diff / 1000);
-}
-
-
-=== helpers.c ===
-#include "philo.h"
-
-int	is_num(char c)
-{
-	return (c >= '0' && c <= '9');
-}
-
-int	is_whitespace(char c)
-{
-	return (c == ' ' || (c >= 9 && c <= 13));
-}
-
-void	exit_error(t_table *table, char *msg)
-{
-	printf("error: %s\n", msg);
-	if (table)
-		destroy_table(table);
-	exit(EXIT_FAILURE);
-}
-
-void	print_status(t_table *table, int idx, t_action action)
-{
-	mtx_op(table, &table->print_mtx, LK);
-	if (action == FORK)
-		printf("%ld %d has taken a fork\n", get_time_diff(&table->start_stamp, NULL), idx);
-	else if (action == EAT)
-		printf("%ld %d is eating\n", get_time_diff(&table->start_stamp, NULL), idx);
-	else if (action == SLEEP)
-		printf("%ld %d is sleeping\n", get_time_diff(&table->start_stamp, NULL), idx);
-	else if (action == THINK)
-		printf("%ld %d is thinking\n", get_time_diff(&table->start_stamp, NULL), idx);
-	else
-		printf("%ld %d died\n", get_time_diff(&table->start_stamp, NULL), idx);
-	mtx_op(table, &table->print_mtx, ULK);
-}
-
-// long	get_ms(t_timer *time)
-// {
-// 	return (time->tv_sec * 1000 + time->tv_usec / 1000);
-// }
-
-// void	ft_usleep(int ms)
-// {
-// 	long	beg;
-// 	t_timer	tmp;
-
-// 	gettimeofday(&tmp, NULL);
-// 	beg = get_ms(&tmp);
-
-// }
-
-
-=== helpers.o ===
-ELF          >                    P           @     @   óúUH‰å‰øˆEü€}ü/~€}ü9¸   ë¸    ]ÃóúUH‰å‰øˆEü€}ü t€}ü~€}ü¸   ë¸    ]ÃóúUH‰åHƒìH‰}øH‰uğH‹EH‰Çè    H‹EğH‰ÆH    H‰Ç¸    è    Hƒ}ø tH‹EøH‰Çè    ¿   è    óúUH‰åHƒìH‰}ø‰uô‰UğH‹EH‰Çè    H‹EøHˆˆ   H‹Eøº   H‰ÎH‰Çè    ƒ}ğu;H‹EøH°   ¾    H‰Çè    H‰Á‹Eô‰ÂH‰ÎH    H‰Ç¸    è    éó   ƒ}ğ u;H‹EøH°   ¾    H‰Çè    H‰Á‹Eô‰ÂH‰ÎH    H‰Ç¸    è    é²   ƒ}ğu8H‹EøH°   ¾    H‰Çè    H‰Á‹Eô‰ÂH‰ÎH    H‰Ç¸    è    ëtƒ}ğu8H‹EøH°   ¾    H‰Çè    H‰Á‹Eô‰ÂH‰ÎH    H‰Ç¸    è    ë6H‹EøH°   ¾    H‰Çè    H‰Á‹Eô‰ÂH‰ÎH    H‰Ç¸    è    H‹EøHˆˆ   H‹Eøº   H‰ÎH‰Çè    è    ÉÃóúUH‰åè    ]Ãerror: %s
- %ld %d has taken a fork
- %ld %d is eating
- %ld %d is sleeping
- %ld %d is thinking
- %ld %d died
-               Ã                           W                                  int          _       ¢_   ƒ       ƒ   Š           Ã       f        r            3ò       5#ò        6#ò    Ê       7Ê       (y      X        5       X       5        X       "	Q       #	Q       $÷        .   (C	°  	    E  	    F°  	    G_    ƒ   À  .   '     H…      y       À      !ğ      À>€      @]       AX       BX       Cm       Dr  (    EÌ  0    FØ  8    GØ  `    HØ  ˆ    I€  °     "›   op 5   $µ  CRT  DST LK ULK      *Œ      5   ,ò  EAT  
-    
-    
-    DIE      3Á      (5L  id 7X        8X       9Ì      :€      ;L    ä      <ş  X   m  .    Q  Ø      V_   ’  ’  ’   €      Q±  L  r  µ       ôÄ  X        RÔ  L       	kX   ì                  œ      œ3      L  ‘hidx 'X   ‘d    5ò  ‘`             X       œl      L  ‘hmsg '~   ‘`     X           -       œ›  c ƒ   ‘l     X           '       œc ƒ   ‘l   :;9I8   :;9I  $ >   I   !I  (   :;9   :!;9I  	 :!;9I  
-(    :!;9I  I  ! I/  .?:!;9!'<  .?:!;9!'@|  %  $ >  & I  :;9  >I:;9  >I:;9   :;9I8  .?:;9'I<  .?:;9'‡<  .?:;9'I<     .?:;9'I@z  .?:;9'I@z   ,                     W                          ^   û                      
-                                            	        É f fX .Y1É f f fX .Y1<»Ÿu»¢X»×g 
-óg 
-óg 
-Ég Ê ­$< t_table __data FORK tv_sec short int t_philo meal_stamp __pthread_internal_list heartbeat print_mtx pthread_mutex_t __count __spins __align destroy_table is_whitespace __prev table start_stamp __next t_op __kind long long int action t_timer long int props printf philo forks mtx_op hb_mtx exit barier unsigned char meals __size signed char long long unsigned int unsigned int SLEEP thread short unsigned int t_action char __nusers t_mutex GNU C17 13.3.0 -mtune=generic -march=x86-64 -g -fsanitize=thread -fasynchronous-unwind-tables -fstack-protector-strong -fstack-clash-protection -fcf-protection __lock __pthread_mutex_s long unsigned int __time_t __elision timeval __pthread_list_t tv_usec philos exit_error THINK __owner t_thread table_mtx __suseconds_t print_status get_time_diff pthread_t __list is_num t_status /home/borov/projects/42_folder/circle_3/philosophers/philo helpers.c /home/borov/projects/42_folder/circle_3/philosophers/philo /usr/include/x86_64-linux-gnu/bits /usr/include/x86_64-linux-gnu/bits/types /usr/include helpers.c helpers.c types.h struct_timeval.h thread-shared-types.h struct_mutex.h pthreadtypes.h philo.h stdlib.h stdio.h  GCC: (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0            GNU   À                 zR x            '    E†C^      <       -    E†Cd      \       X    E†C      x       œ   E†C“     ˜           E†CF                                   ñÿ                                                                 H                                        
-                                                                                                '       !     '       -       /     T       X       :                      L                      S                                            a     ¬       œ      n                      u                      ƒ                      ”                       helpers.c _sub_I_00099_0 is_num is_whitespace exit_error __tsan_func_entry printf destroy_table print_status mtx_op get_time_diff __tsan_func_exit __tsan_init p             üÿÿÿÿÿÿÿ~             üÿÿÿÿÿÿÿ‹             üÿÿÿÿÿÿÿ             üÿÿÿÿÿÿÿ¨             üÿÿÿÿÿÿÿÊ             üÿÿÿÿÿÿÿé             üÿÿÿÿÿÿÿ            üÿÿÿÿÿÿÿ                   %            üÿÿÿÿÿÿÿG            üÿÿÿÿÿÿÿY                    f            üÿÿÿÿÿÿÿˆ            üÿÿÿÿÿÿÿš            2       §            üÿÿÿÿÿÿÿÆ            üÿÿÿÿÿÿÿØ            F       å            üÿÿÿÿÿÿÿş            üÿÿÿÿÿÿÿ            Z                   üÿÿÿÿÿÿÿ<            üÿÿÿÿÿÿÿA            üÿÿÿÿÿÿÿQ            üÿÿÿÿÿÿÿ              H             
-                     
-      ·             
-   	   ;              
-   	                                *       
-              1       
-      p      8       
-      k      ?       
-      -      F       
-      …      M       
-      H      T       
-             b       
-      ñ       g       
-      ‚      s       
-      é      †       
-      ¡      —       
-      Ô       œ       
-      •      ©       
-             ¶       
-      ®      Æ       
-      T      Ë       
-      8       Ø       
-      ¨       å       
-      Á       ø       
-                  
-      ^            
-      W            
-      t       +      
-      Î      8      
-      ¦      E      
-      Í       R      
-      |       _      
-      ‹      l      
-            z      
-                  
-             š      
-      A      ¥      
-      „       Á      
-      d       Í      
-      Ö      Ù      
-      ¯      å      
-              ñ      
-      ¯       ş      
-      ú             
-      *            
-      &      %      
-      ¶      2      
-            ?      
-      P       L      
-      ß      Y      
-            f      
-      Z       s      
-      µ             
-      é       ¶      
-      È       Â      
-      â       Ú      
-      x      à      
-      È      æ      
-             ó      
-      ˜      ÿ      
-                  
-      ;      %      
-      ~      2      
-      -       ?      
-      ¯       R      
-      %       x      
-            ˜      
-            ²      
-      !      Å      
-      Œ       Õ      
-             í      
-      ÷      ò            ¬       	      
-      ¯       %      
-      â       4      
-      ½      9            T       P      
-      ¯       m      
-      š       x            '       œ      
-      #      §                           
-                                   "       
-   	   E       &       
-   	   €       *       
-   	   £       .       
-   	   Ì       8       
-   	   Ù       =       
-   	   ã       B       
-   	   í       G       
-   	   õ       L       
-   	         Q       
-   	         V       
-   	   +      [       
-   	   :      `       
-   	   B      e       
-   	   K      o                                           @             '       `             T       |             ¬       œ             H       .symtab .strtab .shstrtab .rela.text .data .bss .rodata .rela.init_array.00099 .rela.debug_info .debug_abbrev .rela.debug_aranges .rela.debug_line .debug_str .debug_line_str .comment .note.GNU-stack .note.gnu.property .rela.eh_frame                                                                                             @       W                                   @               0      X                          &                     —                                     ,                     —                                     1                     —      k                              >                                                        9      @               ˆ                                 U                            Ç                             P      @                      °                          a                      ×      Ì                             t                      £	      0                              o      @               P      0                           ˆ                      Ó	      !                             ƒ      @               €      h                          ”      0               ô
-      3                            Ÿ      0               '      S                            ¯      0               z      ,                             ¸                      ¦                                     È                     ¨                                     à                     È      ¸                              Û      @               è      x                                                 €               
-                 	                                                                                 `      ê                              
-
-=== main.c ===
-#include "philo.h"
-
-int	main(int argc, char **argv)
-{
-	t_table	table;
-
-	table_create(&table, argc, argv);
-	for (int i = 0; i < table.props[P_NUM]; i++)
-		pthread_create(&table.philos[i].thread, NULL, philo_routine, &table.philos[i]);
-	pthread_create(&table.heartbeat, NULL, hb_routine, &table);
-	table.t_status = 2;
-	destroy_table(&table);
-}
-
-
-=== main.o ===
-ELF          >                    ¸          @     @   óúUH‰åSHìø   ‰½ÿÿÿH‰µ ÿÿÿdH‹%(   H‰Eè1ÀH‹EH‰Çè    H‹• ÿÿÿ‹ÿÿÿH… ÿÿÿ‰ÎH‰Çè    Ç…ÿÿÿ    é‹   H… ÿÿÿHƒÀ H‰Çè    H‹@ÿÿÿ‹…ÿÿÿHcĞH‰ĞHÁàHĞHÁàHH… ÿÿÿHƒÀ H‰Çè    H‹@ÿÿÿ‹…ÿÿÿHcĞH‰ĞHÁàHĞHÁàHÈHƒÀH‰ÙH‹    ¾    H‰Çè    ƒ…ÿÿÿH… ÿÿÿH‰Çè    ‹… ÿÿÿ9…ÿÿÿŒTÿÿÿH… ÿÿÿH• ÿÿÿHz0H‰ÁH‹    H‰Â¾    è    H… ÿÿÿHƒÀH‰Çè    Ç…8ÿÿÿ   H… ÿÿÿH‰Çè    »    è    ‰ØH‹UèdH+%(   tè    H‹]øÉÃóúUH‰åè    ]Ã             W                           ›                  <                   int          f       ¢f   Š               À       m        y            3ï       5#ï        6#ï    Ç       7Ç       (v      _        5       _       5        _       "	X       #	X       $ô        .       88¦      :¦      ;f    	Š   ¶  
-.   7     >‚  ¶  (C	ò      E       Fò      Gf    	Š     
-.   '     HÇ  …       v             !7      À>Ç      @2       A_       B_       CB       DG  (    E  0    F  8    G  `    H  ˆ    IÇ  °     "˜       (5!  id 7_        8_       9      :Ç      ;!    +      <Ó  	_   B  
-.    &        R\  !       W<   r  <        X<   ˆ  <        Ê_   ­  ²  ¼  Á  >    v  ­  Â  ·  Æ  <   Õ  <        Sï  !  _          _           Œ      œ    _   ‘ü}      ‘ğ}    
-+  ‘~        »       i _   ‘Œ~    :;9I8   :;9I   I  $ >   !I  :;9   :!;9I  7 I  	I  
-! I/  .?:;9'I<  .?:!;9!'<   :!;!9I  %     $ >  :;9  & I  :;9   :;9I8  'I  .?:;9'I@|  4 :;9I    4 :;9I   ,                     ›                      Ã     Y   û                      	                                        	        º¡ÉFYM@fJJ+ e! t J¼)»Ÿ t_table __data tv_sec short int meal_stamp __pthread_internal_list heartbeat main print_mtx pthread_mutex_t __count __spins __align destroy_table __prev table start_stamp __next __size __kind long long int pthread_create long int props t_status philo forks hb_mtx unsigned char hb_routine barier table_create meals argc signed char long long unsigned int unsigned int argv thread short unsigned int char __nusers t_philo t_mutex GNU C17 13.3.0 -mtune=generic -march=x86-64 -g -fsanitize=thread -fasynchronous-unwind-tables -fstack-protector-strong -fstack-clash-protection -fcf-protection __lock philo_routine __pthread_mutex_s long unsigned int __time_t __elision timeval __pthread_list_t tv_usec philos __owner t_thread table_mtx __suseconds_t pthread_attr_t pthread_t __list t_timer /home/borov/projects/42_folder/circle_3/philosophers/philo main.c /home/borov/projects/42_folder/circle_3/philosophers/philo /usr/include/x86_64-linux-gnu/bits /usr/include/x86_64-linux-gnu/bits/types /usr/include main.c main.c types.h struct_timeval.h thread-shared-types.h struct_mutex.h pthreadtypes.h philo.h pthread.h  GCC: (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0                 GNU   À                 zR x             Œ   E†CHƒ{      @           E†CF                                   ñÿ                                           Œ                                        	                                                                                                Œ                            .                      ;                      H                      ^                      l                      {                      ˆ                      “                      ¡                      ¯                      À                      Ñ                       main.c _sub_I_00099_0 main __tsan_func_entry table_create __tsan_read8 _GLOBAL_OFFSET_TABLE_ philo_routine pthread_create __tsan_read4 hb_routine __tsan_write4 destroy_table __tsan_func_exit __stack_chk_fail __tsan_init    4          
-   üÿÿÿÿÿÿÿR             üÿÿÿÿÿÿÿt             üÿÿÿÿÿÿÿ©             üÿÿÿÿÿÿÿØ       *      üÿÿÿÿÿÿÿå             üÿÿÿÿÿÿÿû             üÿÿÿÿÿÿÿ)      *      üÿÿÿÿÿÿÿ6            üÿÿÿÿÿÿÿI            üÿÿÿÿÿÿÿb            üÿÿÿÿÿÿÿl            üÿÿÿÿÿÿÿ‚            üÿÿÿÿÿÿÿ•            üÿÿÿÿÿÿÿ              Œ             
-                     
-      ­             
-      ;              
-                                   *       
-              1       
-      t      8       
-      c      F       
-            M       
-      |      T       
-      @      [       
-             i       
-      İ       n       
-      †      z       
-      Ü             
-            ”       
-      À       ™       
-      ™      ¦       
-             ³       
-      ²      Ã       
-      L      È       
-      +       Õ       
-      ’       â       
-      «       õ       
-      ¡            
-      b            
-      M            
-      l       (      
-      Á      5      
-      ”      B      
-      ¹       O      
-      t       \      
-            i      
-            w      
-      ù      ƒ      
-      ê            
-      ²       ›      
-      |       ·      
-      ê      Ñ      
-             Ü      
-      ²       ç      
-      |             
-      \             
-      É             
-      ¥      ,      
-              8      
-      ™       E      
-      æ       R      
-      ì       _      
-      !      l      
-      º      y      
-      û       †      
-      C       “      
-      Ò             
-            ­      
-      R       º      
-      Ÿ       È      
-      
-      Ô      
-      õ       í      
-      5      ú      
-      u            
-                    
-      ™       '      
-            M      
-      „       ]      
-            s      
-      T      ‰      
-      Î       Ö      
-      (      ğ      
-      M       û                          
-      ;            
-      p      *      
-      ™       :            V              
-                                   "       
-      B       &       
-      }       *       
-              .       
-      É       8       
-      Ö       =       
-      İ       B       
-      ä       G       
-      ì       L       
-      ı       Q       
-            V       
-      "      [       
-      1      `       
-      9      j                                           D             Œ       .symtab .strtab .shstrtab .rela.text .data .bss .rela.init_array.00099 .rela.debug_info .debug_abbrev .rela.debug_aranges .rela.debug_line .debug_str .debug_line_str .comment .note.GNU-stack .note.gnu.property .rela.eh_frame                                                                                             @       ›                                   @               °      P                          &                     Û                                     ,                     Û                                     6                     à                                   1      @                                                 M                      è      [                             H      @                                               Y                      C      f                             l                      ©      0                              g      @                      0          
-                 €                      Ù      Ç                              {      @               P      P                          Œ      0                                                  —      0               ²      C                            §      0               õ      ,                             °                      !                                     À                     (                                     Ø                     H      `                              Ó      @                      0                                                 ¨      (         	                 	                      Ğ      İ                                                    Ğ      â                              
-
-=== mtx_op.c ===
-#include "philo.h"
-
-void	mtx_op(t_table *table, t_mutex *mtx, t_op op)
-{
-	if (!table || !mtx)
-		exit_error(table, "mtx_op error");
-	if (op == CRT && pthread_mutex_init(mtx, NULL) != 0)
-		exit_error(table, "mtx_init error");
-	else if (op == DST && pthread_mutex_destroy(mtx) != 0)
-		exit_error(table, "mtx_destroy error\n");
-	else if (op == LK && pthread_mutex_lock(mtx) != 0)
-		exit_error(table, "mtx_lock error\n");
-	else if (op == ULK && pthread_mutex_unlock(mtx) != 0)
-		exit_error(table, "mtx_unlock error\n");
-}
-
-void	mtx_setval(t_table *table, t_mutex *mtx, int *val, int n_val)
-{
-	mtx_op(table, mtx, LK);
-	*val = n_val;
-	mtx_op(table, mtx, ULK);
-}
-int	mtx_getval(t_table *table, t_mutex *mtx, int *val)
-{
-	int	res;
-
-	mtx_op(table, mtx, LK);
-	res = *val;
-	mtx_op(table, mtx, ULK);
-	return (res);
-}
-
-
-=== mtx_op.o ===
-ELF          >                    °          @     @   óúUH‰åHƒì H‰}øH‰uğ‰UìH‹EH‰Çè    Hƒ}ø tHƒ}ğ uH‹EøH    H‰ÖH‰Çè    ƒ}ì u0H‹Eğ¾    H‰Çè    …ÀtH‹EøH    H‰ÖH‰Çè    éˆ   ƒ}ìu(H‹EğH‰Çè    …ÀtH‹EøH    H‰ÖH‰Çè    ëZƒ}ìu(H‹EğH‰Çè    …ÀtH‹EøH    H‰ÖH‰Çè    ë,ƒ}ìu&H‹EğH‰Çè    …ÀtH‹EøH    H‰ÖH‰Çè    è    ÉÃóúUH‰åHƒì H‰}øH‰uğH‰Uè‰MäH‹EH‰Çè    H‹MğH‹Eøº   H‰ÎH‰Çè    H‹EèH‰Çè    H‹Eè‹Uä‰H‹MğH‹Eøº   H‰ÎH‰Çè    è    ÉÃóúUH‰åSHƒì8H‰}ØH‰uĞH‰UÈH‹EH‰Çè    H‹MĞH‹EØº   H‰ÎH‰Çè    H‹EÈH‰Çè    H‹EÈ‹ ‰EìH‹MĞH‹EØº   H‰ÎH‰Çè    ‹]ìè    ‰ØH‹]øÉÃóúUH‰åè    ]Ãmtx_op error mtx_init error mtx_destroy error
- mtx_lock error
- mtx_unlock error
-              á                           
-                                  int          _       ¢_   ƒ       ƒ   š   .            É       f        r            3ø       5#ø        6#ø    Ğ       7Ğ       (      X        5       X       5        X       "	Q       #	Q       $ı        .    ©      "Š       #X        $‹  ©  (Cã      E	      Fã      G_    ƒ   ó  .   '     Hº             ó      !#      À>³      @S       AX       BX       Cc       Dh  (    Eÿ  0    F  8    G  `    H  ˆ    I³  °     "¡   op 5   $è  	CRT  	DST 	LK 	ULK      *¿      (5B  id 7X        8X       9ÿ      :³      ;B          <ô  X   c  .    G    
-    CX   ‚  ‚   ó  
-    X   œ  ‚   
-    X   ±  ‚   
-    X   Ë  ‚  Ë   µ      Pç  B  ~        X           z       œD      B  ‘Hmtx )h  ‘@val 3D  ‘¸res X   ‘\ X               t       œ       B  ‘hmtx *h  ‘`val 4D  ‘X    =X   ‘T                   œ    B  ‘hmtx &h  ‘`op 0è  ‘\   :;9I8   :;9I  $ >   !I   I   :!;9I  :;9   :!;9I  	(   
-.?:!;9!'I<   :!;9I  I  ! I/  :!;9!	  %  $ >  & I  >I:;9   :;9I8  .?:;9'<  .?:;9'I@|  4 :;9I  .?:;9'@|  .?:;9'@|   ,                     
-                          Y   û                      	                                        	        f» tuY f K
-Ÿ f ºK
-u f ºK
-u f ºKŸ?»uK»>‚½uK	uŸf t_table __data tv_sec short int meal_stamp __pthread_internal_list heartbeat print_mtx pthread_mutex_t __prev __count __spins __align pthread_mutex_init table pthread_mutex_lock start_stamp __next t_op pthread_mutex_unlock __kind long long int long int props t_status philo forks pthread_mutexattr_t mtx_op hb_mtx barier unsigned char meals __size pthread_mutex_destroy signed char long long unsigned int unsigned int thread short unsigned int char __nusers t_philo t_mutex GNU C17 13.3.0 -mtune=generic -march=x86-64 -g -fsanitize=thread -fasynchronous-unwind-tables -fstack-protector-strong -fstack-clash-protection -fcf-protection __lock __pthread_mutex_s long unsigned int philos __time_t __elision timeval __pthread_list_t tv_usec mtx_setval exit_error __owner mtx_getval n_val t_thread table_mtx __suseconds_t pthread_t __list t_timer /home/borov/projects/42_folder/circle_3/philosophers/philo mtx_op.c /home/borov/projects/42_folder/circle_3/philosophers/philo /usr/include/x86_64-linux-gnu/bits /usr/include/x86_64-linux-gnu/bits/types /usr/include mtx_op.c mtx_op.c types.h struct_timeval.h thread-shared-types.h struct_mutex.h pthreadtypes.h philo.h pthread.h  GCC: (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0              GNU   À                 zR x               E†C    <       t    E†Ck      \       z    E†CEƒl       €           E†CF                                   ñÿ                                                            
-     û                                        
-                                                                                                                             2                      =                      P                      f                      y                                            Ÿ           t       ª                      ¸           z       Ã                      Ğ                       mtx_op.c _sub_I_00099_0 mtx_op __tsan_func_entry exit_error pthread_mutex_init pthread_mutex_destroy pthread_mutex_lock pthread_mutex_unlock __tsan_func_exit mtx_setval __tsan_write4 mtx_getval __tsan_read4 __tsan_init                  üÿÿÿÿÿÿÿ8             üÿÿÿÿÿÿÿC             üÿÿÿÿÿÿÿZ             üÿÿÿÿÿÿÿi             	       t             üÿÿÿÿÿÿÿ‹             üÿÿÿÿÿÿÿš                    ¥             üÿÿÿÿÿÿÿ¹             üÿÿÿÿÿÿÿÈ             +       Ó             üÿÿÿÿÿÿÿç             üÿÿÿÿÿÿÿö             ;                   üÿÿÿÿÿÿÿ            üÿÿÿÿÿÿÿ0            üÿÿÿÿÿÿÿH         
-   üÿÿÿÿÿÿÿT            üÿÿÿÿÿÿÿu         
-   üÿÿÿÿÿÿÿz            üÿÿÿÿÿÿÿ¢            üÿÿÿÿÿÿÿº         
-   üÿÿÿÿÿÿÿÆ            üÿÿÿÿÿÿÿç         
-   üÿÿÿÿÿÿÿï            üÿÿÿÿÿÿÿ            üÿÿÿÿÿÿÿ              û             
-                     
-      Ú             
-   	   ;              
-   	                                *       
-              1       
-      “      8       
-      •      ?       
-      A      F       
-      ©      M       
-      r      T       
-             b       
-      ô       g       
-      ¬      s       
-      "      †       
-      ¼             
-      æ       ¢       
-      ¿      ¯       
-             ¼       
-      Ø      Ì       
-      ~      Ñ       
-      +       Ş       
-      g       ë       
-      ¾       ş       
-      Ç      
-      
-                  
-      z      $      
-      n       1      
-      ö      >      
-      Á      K      
-      ß       X      
-      v       e      
-      µ      r      
-      :      €      
-      0      “      
-      U            
-      ~       ª      
-            Â      
-             Í      
-      U      Ø      
-      ~       ô      
-      W              
-                  
-      Ò            
-              $      
-      ™       1      
-      ı       >      
-            K      
-      :      X      
-      ¥      e      
-            r      
-      C             
-            Œ      
-      3      ™      
-      M       ¦      
-      ²       ´      
-      A      é      
-      Å       õ      
-                  
-      O            
-      ¢      (      
-              5      
-      ™       H      
-      Ê      n      
-      Ê       ˆ      
-      Ÿ             
-      \      ²      
-      †       Ñ      
-      ë      è      
-      ş      ó                  
-      
-      ™       J      
-      à      Q                  h      
-      ™       ’      
-      	      ¡      
-      ,      ¨                    »      
-      ™              
-                                   "       
-   	   D       &       
-   	          *       
-   	   ¢       .       
-   	   Ë       8       
-   	   Ø       =       
-   	   á       B       
-   	   ê       G       
-   	   ò       L       
-   	         Q       
-   	         V       
-   	   (      [       
-   	   7      `       
-   	   ?      j                                           @                   `                   „             û       .symtab .strtab .shstrtab .rela.text .data .bss .rodata .rela.init_array.00099 .rela.debug_info .debug_abbrev .rela.debug_aranges .rela.debug_line .debug_str .debug_line_str .comment .note.GNU-stack .note.gnu.property .rela.eh_frame                                                                                             @       
-                                   @               Ø      ˆ                          &                     J                                     ,                     J                                     1                     J      Q                              >                                                         9      @               `                                 U                      ¨      å                             P      @               x      h                          a                            ‰                             t                      	      0                              o      @               à      0                           ˆ                      F	                                   ƒ      @                     P                          ”      0               N
-      I                            Ÿ      0               —      I                            ¯      0               à      ,                             ¸                                                           È                                                          à                     0                                     Û      @               `      `                                                 Ğ      (         
-                 	                      ø      Ü                                                    À      ê                              
-
-=== output.txt ===
-
-
-=== p_routine.c ===
-#include "philo.h"
-
-static void	philo_wait_start(t_table *table, t_philo *philo)
-{
-	mtx_op(table, &table->table_mtx, LK);
-	table->barier += 1;
-	if (table->barier >= table->props[P_NUM])
-		gettimeofday(&table->start_stamp, NULL);
-	mtx_op(table, &table->table_mtx, ULK);
-	while (1)
-	{
-		mtx_op(table, &table->table_mtx, LK);
-		if (table->barier >= table->props[P_NUM])
-		{
-			mtx_op(table, &table->hb_mtx, LK);
-			philo->meal_stamp = table->start_stamp;
-			mtx_op(table, &table->hb_mtx, ULK);
-			mtx_op(table, &table->table_mtx, ULK);
-			break;
-		}
-		mtx_op(table, &table->table_mtx, ULK);
-	}
-}
-
-void	*hb_routine(void *arg)
-{
-	t_table	*table;
-	int		c_philo;
-
-	table = (t_table *)arg;
-	while (1)
-	{
-		mtx_op(table, &table->table_mtx, LK);
-		if (table->barier >= table->props[P_NUM])
-		{
-			mtx_op(table, &table->table_mtx, ULK);
-			break;
-		}
-		mtx_op(table, &table->table_mtx, ULK);
-	}
-	while (1)
-	{
-		int	dead;
-		int	fed;
-		fed = 0;
-		c_philo = 0;
-		while (c_philo < table->props[P_NUM])
-		{
-			mtx_op(table, &table->hb_mtx, LK);
-			dead = (get_time_diff(&table->philos[c_philo].meal_stamp, NULL) >= table->props[TTD]);
-			fed += (table->props[MEALS] != -1 && table->philos[c_philo].meals >= table->props[MEALS]);
-			mtx_op(table, &table->hb_mtx, ULK);
-			if (dead)
-			{
-				mtx_setval(table, &table->table_mtx, &table->barier, 0);
-				print_status(table, c_philo + 1, DIE);
-				return (NULL);
-			}
-			c_philo += 1;
-		}
-		if (fed >= table->props[P_NUM])
-		{
-			mtx_setval(table, &table->table_mtx, &table->barier, 0);
-			return (NULL);
-		}
-		if (mtx_getval(table, &table->table_mtx, &table->barier) == 0)
-			break ;
-	}
-	return (NULL);
-}
-
-static int	ph_action(t_table *table, t_action a_type)
-{
-	int	time;
-	int	s_time;
-	int	delta;
-
-	if (a_type == EAT)
-		time = table->props[TTE];
-	else if (a_type == SLEEP)
-		time = table->props[TTS];
-	else if (a_type == THINK)
-		time = table->props[TTT];
-	else
-		time = 0;
-	s_time = 0;
-	delta = 10;
-	while (s_time < time)
-	{
-		if (mtx_getval(table, &table->table_mtx, &table->barier) == 0)
-			return (1);
-		usleep(delta * 1000);
-		s_time += delta;
-	}
-	return (0);
-}
-
-static int	ph_eat(t_table *table, t_philo *philo)
-{
-	int	act_res;
-
-	if (philo->id % 2 == 0)
-	{
-		mtx_op(table, &table->forks[philo->id % table->props[P_NUM]], LK);
-		if (mtx_getval(table, &table->table_mtx, &table->barier) == 0)
-		{
-			mtx_op(table, &table->forks[philo->id % table->props[P_NUM]], ULK);
-			return (1);
-		}
-		print_status(table, philo->id, FORK);
-		mtx_op(table, &table->forks[philo->id - 1], LK);
-		if (mtx_getval(table, &table->table_mtx, &table->barier) == 0)
-		{
-			mtx_op(table, &table->forks[philo->id % table->props[P_NUM]], ULK);
-			mtx_op(table, &table->forks[philo->id - 1], ULK);
-			return (1);
-		}
-		print_status(table, philo->id, FORK);
-	}
-	else
-	{
-		mtx_op(table, &table->forks[philo->id - 1], LK);
-		if (mtx_getval(table, &table->table_mtx, &table->barier) == 0)
-		{
-			mtx_op(table, &table->forks[philo->id - 1], ULK);
-			return (1);
-		}
-		print_status(table, philo->id, FORK);
-		mtx_op(table, &table->forks[philo->id % table->props[P_NUM]], LK);
-		if (mtx_getval(table, &table->table_mtx, &table->barier) == 0)
-		{
-			mtx_op(table, &table->forks[philo->id - 1], ULK);
-			mtx_op(table, &table->forks[philo->id % table->props[P_NUM]], ULK);
-			return (1);
-		}
-		print_status(table, philo->id, FORK);
-	}
-	mtx_op(table, &table->hb_mtx, LK);
-	gettimeofday(&philo->meal_stamp, NULL);
-	philo->meals += 1;
-	mtx_op(table, &table->hb_mtx, ULK);
-	print_status(table, philo->id, EAT);
-	act_res = ph_action(table, EAT);
-	mtx_op(table, &table->forks[philo->id - 1], ULK);
-	mtx_op(table, &table->forks[philo->id % table->props[P_NUM]], ULK);
-	return (act_res);
-}
-
-void	*philo_routine(void *arg)
-{
-	t_philo	*philo;
-	t_table	*table;
-
-	philo = (t_philo *)arg;
-	table = philo->table;
-	philo_wait_start(table, philo);
-	while (1)
-	{
-		if (ph_eat(table, philo) != 0)
-			return (NULL);
-		print_status(table, philo->id, SLEEP);
-		if (ph_action(table, SLEEP) != 0)
-			return (NULL);
-		print_status(table, philo->id, THINK);
-	}
-	return (NULL);
-}
-
-
-=== p_routine.o ===
-ELF          >                    €;          @     @   óúUH‰åSHƒìH‰}èH‰uàH‹EH‰Çè    H‹EèHH8H‹Eèº   H‰ÎH‰Çè    H‹EèHƒÀH‰Çè    H‹Eè‹@XH‹EèHƒÀH‰Çè    H‹Eè‰XH‹EèHƒÀH‰Çè    H‹Eè‹XH‹EèH‰Çè    H‹Eè‹ 9Ã|H‹EèH°   ¾    H‰Çè    H‹EèHH8H‹Eèº   H‰ÎH‰Çè    H‹EèHH8H‹Eèº   H‰ÎH‰Çè    H‹EèHƒÀH‰Çè    H‹Eè‹XH‹EèH‰Çè    H‹Eè‹ 9ÃŒ–   H‹EèHH`H‹Eèº   H‰ÎH‰Çè    H‹EàHƒÀH‰Çè    H‹EèH°   H‰Çè    H‹MàH‹EèH‹¸   H‹€°   H‰AH‰QH‹EèHH`H‹Eèº   H‰ÎH‰Çè    H‹EèHH8H‹Eèº   H‰ÎH‰Çè    ë!H‹EèHH8H‹Eèº   H‰ÎH‰Çè    éüşÿÿè    H‹]øÉÃóúUH‰åSHƒì8H‰}ÈH‹EH‰Çè    H‹EÈH‰EèH‹EèHH8H‹Eèº   H‰ÎH‰Çè    H‹EèHƒÀH‰Çè    H‹Eè‹XH‹EèH‰Çè    H‹Eè‹ 9Ã|H‹EèHH8H‹Eèº   H‰ÎH‰Çè    ë!H‹EèHH8H‹Eèº   H‰ÎH‰Çè    éxÿÿÿÇEà    ÇEÜ    és  H‹EèHH`H‹Eèº   H‰ÎH‰Çè    H‹EèHƒÀ H‰Çè    H‹EèH‹H ‹EÜHcĞH‰ĞHÁàHĞHÁàHÈHƒÀ¾    H‰Çè    H‰ÃH‹EèHƒÀH‰Çè    H‹Eè‹@H˜H9ÃÀ¶À‰EäH‹EèHƒÀH‰Çè    H‹Eè‹@ƒøÿtaH‹EèHƒÀ H‰Çè    H‹EèH‹H ‹EÜHcĞH‰ĞHÁàHĞHÁàHHCH‰Çè    ‹[H‹EèHƒÀH‰Çè    H‹Eè‹@9Ã|¸   ë¸    EàH‹EèHH`H‹Eèº   H‰ÎH‰Çè    ƒ}ä tDH‹EèHPH‹EèHp8H‹Eè¹    H‰Çè    ‹EÜHH‹Eèº   ‰ÎH‰Çè    »    éŒ   ƒEÜH‹EèH‰Çè    H‹Eè‹ 9EÜŒrşÿÿH‹EèH‰Çè    H‹Eè‹ 9Eà|(H‹EèHPH‹EèHp8H‹Eè¹    H‰Çè    »    ë.H‹EèHPH‹EèHH8H‹EèH‰ÎH‰Çè    …Àtéøıÿÿ»    è    H‰ØH‹]øÉÃóúUH‰åSHƒì(H‰}Ø‰uÔH‹EH‰Çè    ƒ}Ô uH‹EØHƒÀH‰Çè    H‹EØ‹@‰EäëKƒ}ÔuH‹EØHƒÀH‰Çè    H‹EØ‹@‰Eäë)ƒ}ÔuH‹EØHƒÀH‰Çè    H‹EØ‹@‰EäëÇEä    ÇEè    ÇEì
-   ë@H‹EØHPH‹EØHH8H‹EØH‰ÎH‰Çè    …Àu»   ë#‹EìiÀè  ‰Çè    ‹EìEè‹Eè;Eä|¸»    è    ‰ØH‹]øÉÃóúUH‰åATSHƒì H‰}ØH‰uĞH‹EH‰Çè    H‹EĞH‰Çè    H‹EĞ‹ ƒà…À…¥  H‹EØHƒÀ(H‰Çè    H‹EØL‹`(H‹EĞH‰Çè    H‹EĞ‹H‹EØH‰Çè    H‹EØ‹0‰Ø™÷ş‰Ñ‰ÈHcĞH‰ĞHÁàHĞHÁàIH‹EØº   H‰ÎH‰Çè    H‹EØHPH‹EØHH8H‹EØH‰ÎH‰Çè    …ÀuxH‹EØHƒÀ(H‰Çè    H‹EØL‹`(H‹EĞH‰Çè    H‹EĞ‹H‹EØH‰Çè    H‹EØ‹0‰Ø™÷ş‰Ñ‰ÈHcĞH‰ĞHÁàHĞHÁàIH‹EØº   H‰ÎH‰Çè    »   é¤  H‹EĞH‰Çè    H‹EĞ‹H‹EØº   ‰ÎH‰Çè    H‹EØHƒÀ(H‰Çè    H‹EØH‹X(H‹EĞH‰Çè    H‹EĞ‹ HcĞH‰ĞHÁàHĞHÁàHƒè(HH‹EØº   H‰ÎH‰Çè    H‹EØHPH‹EØHH8H‹EØH‰ÎH‰Çè    …À…Ï   H‹EØHƒÀ(H‰Çè    H‹EØL‹`(H‹EĞH‰Çè    H‹EĞ‹H‹EØH‰Çè    H‹EØ‹0‰Ø™÷ş‰Ñ‰ÈHcĞH‰ĞHÁàHĞHÁàIH‹EØº   H‰ÎH‰Çè    H‹EØHƒÀ(H‰Çè    H‹EØH‹X(H‹EĞH‰Çè    H‹EĞ‹ HcĞH‰ĞHÁàHĞHÁàHƒè(HH‹EØº   H‰ÎH‰Çè    »   é2  H‹EĞH‰Çè    H‹EĞ‹H‹EØº   ‰ÎH‰Çè    é‰  H‹EØHƒÀ(H‰Çè    H‹EØH‹X(H‹EĞH‰Çè    H‹EĞ‹ HcĞH‰ĞHÁàHĞHÁàHƒè(HH‹EØº   H‰ÎH‰Çè    H‹EØHPH‹EØHH8H‹EØH‰ÎH‰Çè    …ÀuaH‹EØHƒÀ(H‰Çè    H‹EØH‹X(H‹EĞH‰Çè    H‹EĞ‹ HcĞH‰ĞHÁàHĞHÁàHƒè(HH‹EØº   H‰ÎH‰Çè    »   é-  H‹EĞH‰Çè    H‹EĞ‹H‹EØº   ‰ÎH‰Çè    H‹EØHƒÀ(H‰Çè    H‹EØL‹`(H‹EĞH‰Çè    H‹EĞ‹H‹EØH‰Çè    H‹EØ‹0‰Ø™÷ş‰Ñ‰ÈHcĞH‰ĞHÁàHĞHÁàIH‹EØº   H‰ÎH‰Çè    H‹EØHPH‹EØHH8H‹EØH‰ÎH‰Çè    …À…Ï   H‹EØHƒÀ(H‰Çè    H‹EØH‹X(H‹EĞH‰Çè    H‹EĞ‹ HcĞH‰ĞHÁàHĞHÁàHƒè(HH‹EØº   H‰ÎH‰Çè    H‹EØHƒÀ(H‰Çè    H‹EØL‹`(H‹EĞH‰Çè    H‹EĞ‹H‹EØH‰Çè    H‹EØ‹0‰Ø™÷ş‰Ñ‰ÈHcĞH‰ĞHÁàHĞHÁàIH‹EØº   H‰ÎH‰Çè    »   é¤  H‹EĞH‰Çè    H‹EĞ‹H‹EØº   ‰ÎH‰Çè    H‹EØHH`H‹EØº   H‰ÎH‰Çè    H‹EĞHƒÀ¾    H‰Çè    H‹EĞHƒÀH‰Çè    H‹EĞ‹@XH‹EĞHƒÀH‰Çè    H‹EĞ‰XH‹EØHH`H‹EØº   H‰ÎH‰Çè    H‹EĞH‰Çè    H‹EĞ‹H‹EØº    ‰ÎH‰Çè    H‹EØ¾    H‰Çèçøÿÿ‰EìH‹EØHƒÀ(H‰Çè    H‹EØH‹X(H‹EĞH‰Çè    H‹EĞ‹ HcĞH‰ĞHÁàHĞHÁàHƒè(HH‹EØº   H‰ÎH‰Çè    H‹EØHƒÀ(H‰Çè    H‹EØL‹`(H‹EĞH‰Çè    H‹EĞ‹H‹EØH‰Çè    H‹EØ‹0‰Ø™÷ş‰Ñ‰ÈHcĞH‰ĞHÁàHĞHÁàIH‹EØº   H‰ÎH‰Çè    ‹]ìè    ‰ØHƒÄ [A\]ÃóúUH‰åSHƒì(H‰}ØH‹EH‰Çè    H‹EØH‰EàH‹EàHƒÀ H‰Çè    H‹EàH‹@ H‰EèH‹UàH‹EèH‰ÖH‰ÇèóÿÿH‹UàH‹EèH‰ÖH‰Çèœøÿÿ…Àt»    ëkH‹EàH‰Çè    H‹Eà‹H‹Eèº   ‰ÎH‰Çè    H‹Eè¾   H‰Çèd÷ÿÿ…Àt»    ë*H‹EàH‰Çè    H‹Eà‹H‹Eèº   ‰ÎH‰Çè    éwÿÿÿè    H‰ØH‹]øÉÃóúUH‰åè    ]Ã           ï                           •                  <                   int          f       ¡5       ¢f           	    Ç       m        …        	    3ö       5#ö        6#ö    Î       7Î   	    (}      _        5       _       5        _       "	X       #	X       $û        .   (C	´  
-    E  
-    F´  
-    Gf    ‘   Ä  .   '     H‰      }       Ä      !ô  	    À>„      @a       A_       B_       Cq       Dv  (    EĞ  0    FÜ  8    GÜ  `    HÜ  ˆ    I„  °     "Ÿ   op 5   $¹  CRT  DST LK ULK      *      5   ,ö  EAT              DIE      3Å  	    (5P  id 7_        8_       9Ğ      :„      ;P    è      <  _   q  .    U  Ü      à_   ’  y        U_   ²  P  v  ²   _       YÑ  P  _   ö       Tğ  P  v  ²  _        Vf          „      	C_   +  0  >    Ÿ   +      QO  P  v  ¹       •<           ë       œš  arg •<   ‘H    —q  ‘P    ˜P  ‘X     b_           ı      œå      bP  ‘H    b,q  ‘@    d_   ‘\     H_           ÷       œL      HP  ‘H    H/ö  ‘D    J_   ‘T    K_   ‘X    L_   ‘\     <           É      œ»  arg <   ‘¸    P  ‘X    _   ‘L        +_   ‘Tfed ,_   ‘P              Ş      œ    'P  ‘X    7q  ‘P   :;9I8   I   :;9I  $ >  4 :!;9I   !I  (    :!;9I  	:;9  
- :!;9I  (   .?:;9'I<  .?:!;9!'<  7 I  I  ! I/  .?:!;9!'I@|   :!;9I  .:!;9!'I@|  %     $ >  :;9  >I:;9  >I:;9   :;9I8  .?:;9'I<  U  4 :;9I  .:;9'@|   ,                     •                               ‹	“	”	 n    b   û                          
-                                            	        J»$ä"#.ÖKÉ¯$$.Ö„$8­­0w¬w¾…$$.ÖL­0z¬Xu	uZ $(òfS ¬D 	 f×&ä. È6 ò? ¬U .& ä JX . X=­hóƒ  t‚ÖÈÖZóv ÖhJX	"Ÿ“<¿×
-=×
-=×>	uuu0 ÖKu
-ua	‰Ÿ…fõÖ<ô$<7 )ÖºÖu Ö¼%<8 *ÖºÖuØ)$< u Öô%<8 *ÖºÖå%< uØ.$< u Ö¼%< uØ)$<7 )ÖºÖu Öô%< å%<8 *ÖºÖuØô­‚Kä‘åó­#< å#<6 (ÖºÖ	uƒ¯¾ó=1 .K­ó K­í¦ t_table __data usleep FORK tv_sec short int t_philo meal_stamp __pthread_internal_list delta heartbeat print_mtx pthread_mutex_t __suseconds_t __count __spins dead __align __prev s_time table start_stamp __next __size ph_eat t_op a_type long long int action long int props t_status philo forks mtx_op hb_mtx philo_wait_start ph_action hb_routine barier unsigned char act_res meals gettimeofday signed char long long unsigned int unsigned int time SLEEP thread short unsigned int t_action char __nusers __useconds_t t_mutex GNU C17 13.3.0 -mtune=generic -march=x86-64 -g -fsanitize=thread -fasynchronous-unwind-tables -fstack-protector-strong -fstack-clash-protection -fcf-protection __lock philo_routine __pthread_mutex_s long unsigned int philos __time_t __elision timeval __pthread_list_t tv_usec mtx_setval THINK __owner mtx_getval t_thread table_mtx c_philo __kind print_status get_time_diff pthread_t __list t_timer /home/borov/projects/42_folder/circle_3/philosophers/philo p_routine.c /home/borov/projects/42_folder/circle_3/philosophers/philo /usr/include/x86_64-linux-gnu/bits /usr/include/x86_64-linux-gnu/bits/types /usr/include /usr/include/x86_64-linux-gnu/sys p_routine.c p_routine.c types.h struct_timeval.h thread-shared-types.h struct_mutex.h pthreadtypes.h philo.h unistd.h time.h  GCC: (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0                 GNU   À                 zR x             Ş   E†CEƒĞ      @       É   E†CEƒ»      d       ÷    E†CEƒé       ˆ       ı   E†CGŒƒí    ¬       ë    E†CEƒİ       Ğ           E†CF                                   ñÿ                                                   Ş           §      ÷       (           ı      /     †                                        	                                                                                                         >                      P                      W                      d                      r                                                                  œ                      ­     Ş      É      ¸                      Å                      Ó                      Ş                      ë                      ö                      ı     ›      ë                             p_routine.c philo_wait_start ph_action ph_eat _sub_I_00099_0 __tsan_func_entry mtx_op __tsan_read4 __tsan_write4 gettimeofday __tsan_write16 __tsan_read16 __tsan_func_exit hb_routine __tsan_read8 get_time_diff mtx_setval print_status mtx_getval usleep philo_routine __tsan_init               üÿÿÿÿÿÿÿ9             üÿÿÿÿÿÿÿI             üÿÿÿÿÿÿÿc             üÿÿÿÿÿÿÿz             üÿÿÿÿÿÿÿ             üÿÿÿÿÿÿÿ®             üÿÿÿÿÿÿÿÊ             üÿÿÿÿÿÿÿæ             üÿÿÿÿÿÿÿö             üÿÿÿÿÿÿÿ	            üÿÿÿÿÿÿÿ3            üÿÿÿÿÿÿÿC            üÿÿÿÿÿÿÿU            üÿÿÿÿÿÿÿ            üÿÿÿÿÿÿÿ«            üÿÿÿÿÿÿÿÉ            üÿÿÿÿÿÿÿÓ            üÿÿÿÿÿÿÿ÷            üÿÿÿÿÿÿÿ            üÿÿÿÿÿÿÿ+            üÿÿÿÿÿÿÿ>            üÿÿÿÿÿÿÿd            üÿÿÿÿÿÿÿ‚            üÿÿÿÿÿÿÿ¶            üÿÿÿÿÿÿÿÆ            üÿÿÿÿÿÿÿö            üÿÿÿÿÿÿÿ	            üÿÿÿÿÿÿÿ.            üÿÿÿÿÿÿÿJ            üÿÿÿÿÿÿÿv            üÿÿÿÿÿÿÿ‰            üÿÿÿÿÿÿÿ¿            üÿÿÿÿÿÿÿæ            üÿÿÿÿÿÿÿÿ            üÿÿÿÿÿÿÿ            üÿÿÿÿÿÿÿ4            üÿÿÿÿÿÿÿ`            üÿÿÿÿÿÿÿ†            üÿÿÿÿÿÿÿš            üÿÿÿÿÿÿÿÃ            üÿÿÿÿÿÿÿÙ            üÿÿÿÿÿÿÿû            üÿÿÿÿÿÿÿ            üÿÿÿÿÿÿÿ_            üÿÿÿÿÿÿÿz            üÿÿÿÿÿÿÿ’            üÿÿÿÿÿÿÿ½            üÿÿÿÿÿÿÿÉ            üÿÿÿÿÿÿÿê            üÿÿÿÿÿÿÿş            üÿÿÿÿÿÿÿ            üÿÿÿÿÿÿÿH            üÿÿÿÿÿÿÿg            üÿÿÿÿÿÿÿ{            üÿÿÿÿÿÿÿ            üÿÿÿÿÿÿÿ¡            üÿÿÿÿÿÿÿÙ            üÿÿÿÿÿÿÿï            üÿÿÿÿÿÿÿ            üÿÿÿÿÿÿÿ            üÿÿÿÿÿÿÿ,            üÿÿÿÿÿÿÿ_            üÿÿÿÿÿÿÿ~            üÿÿÿÿÿÿÿ–            üÿÿÿÿÿÿÿª            üÿÿÿÿÿÿÿ¼            üÿÿÿÿÿÿÿô            üÿÿÿÿÿÿÿ            üÿÿÿÿÿÿÿ            üÿÿÿÿÿÿÿK            üÿÿÿÿÿÿÿa            üÿÿÿÿÿÿÿz            üÿÿÿÿÿÿÿ            üÿÿÿÿÿÿÿ£            üÿÿÿÿÿÿÿÖ            üÿÿÿÿÿÿÿõ            üÿÿÿÿÿÿÿ		            üÿÿÿÿÿÿÿ	            üÿÿÿÿÿÿÿP	            üÿÿÿÿÿÿÿf	            üÿÿÿÿÿÿÿ	            üÿÿÿÿÿÿÿ	            üÿÿÿÿÿÿÿ£	            üÿÿÿÿÿÿÿµ	            üÿÿÿÿÿÿÿí	            üÿÿÿÿÿÿÿ
-            üÿÿÿÿÿÿÿ$
-            üÿÿÿÿÿÿÿ8
-            üÿÿÿÿÿÿÿk
-            üÿÿÿÿÿÿÿ{
-            üÿÿÿÿÿÿÿ
-            üÿÿÿÿÿÿÿ¡
-            üÿÿÿÿÿÿÿÙ
-            üÿÿÿÿÿÿÿï
-            üÿÿÿÿÿÿÿ            üÿÿÿÿÿÿÿ$            üÿÿÿÿÿÿÿ9            üÿÿÿÿÿÿÿI            üÿÿÿÿÿÿÿc            üÿÿÿÿÿÿÿ†            üÿÿÿÿÿÿÿ’            üÿÿÿÿÿÿÿ«            üÿÿÿÿÿÿÿÏ            üÿÿÿÿÿÿÿã            üÿÿÿÿÿÿÿ            üÿÿÿÿÿÿÿ&            üÿÿÿÿÿÿÿ:            üÿÿÿÿÿÿÿL            üÿÿÿÿÿÿÿ„            üÿÿÿÿÿÿÿŒ            üÿÿÿÿÿÿÿ´            üÿÿÿÿÿÿÿÌ            üÿÿÿÿÿÿÿ            üÿÿÿÿÿÿÿ.            üÿÿÿÿÿÿÿV            üÿÿÿÿÿÿÿo            üÿÿÿÿÿÿÿy            üÿÿÿÿÿÿÿ            üÿÿÿÿÿÿÿ              †             
-                     
-                   
-      ;              
-                                   *       
-   
-           1       
-      Ò      8       
-      ­      F       
-      a      M       
-      Ì      T       
-      Š      [       
-      "       i       
-            n       
-      ë      z       
-      ö      †       
-             ”       
-      è      ›       
-      í               
-      ş      ­       
-             º       
-            Ê       
-      –      Ï       
-      ?       Ü       
-      ¬       é       
-      Ì       ü       
-                  
-      À            
-      «      "      
-             /      
-      0      <      
-      í      I      
-      ^      V      
-      —       c      
-      ô      p      
-      Š      ~      
-      €      “      
-                   
-      Ó       ©      
-      ¤       Å      
-      q       Ñ      
-      C      İ      
-            é      
-              õ      
-      º             
-                  
-                  
-      Z      )      
-      ä      6      
-             C      
-      ]       P      
-      L      ]      
-      -      j      
-      g       w      
-      À       …      
-      ‘      º      
-      á       Æ      
-      û       Ş      
-      ¿      ä      
-      *      ê      
-             ÷      
-      ß            
-                  
-      w      )      
-      Å      6      
-      4       C      
-      º       V      
-      ,       |      
-             “      
-      8      ¸      
-      e      Ò      
-            ñ      
-      r            
-      }      6      
-      &      P      
-      ²      Y            ›      ~      
-            Œ      
-      º       ›      
-      Ú       ¤                  »      
-      º       É      
-            ×      
-      o      æ      
-      E      ï            §            
-      º             
-      æ       "      
-      º      0      
-      ³       >      
-      W       M      
-      O      V            Ş      |      
-      º       Š      
-      V      ˜      
-   	                
-      Ÿ       ¼      
-      4      Ã                    Ö      
-      º       ä      
-                   
-                                   "       
-      G       &       
-      ‚       *       
-      ¥       .       
-      Î       2       
-      Û       <       
-      ı       A       
-      	      F       
-            K       
-            P       
-      .      U       
-      D      Z       
-      S      _       
-      b      d       
-      j      i       
-      s      s                                           D             Ş      h             §      Œ                   °             ›      Ô             †       .symtab .strtab .shstrtab .rela.text .data .bss .rela.init_array.00099 .rela.debug_info .debug_abbrev .rela.debug_aranges .debug_rnglists .rela.debug_line .debug_str .debug_line_str .comment .note.GNU-stack .note.gnu.property .rela.eh_frame                                                                                             @       •                                   @               ¨#      (                          &                     Õ                                     ,                     Õ                                     6                     Ø                                   1      @               Ğ.                                 M                      à      ó                             H      @               è.      `	                          Y                      Ó      Ş                             l                      ±      0                              g      @               H8      0          
-                 {                      á                                                          ø      r                             ‹      @               x8      €                          œ      0               j      ™                            §      0                     z                            ·      0               }      ,                             À                      ©                                     Ğ                     °                                     è                     Ğ      ğ                              ã      @               ø9                                                       À      Ğ                          	                      "                                                         ˆ:      ò                              
-
-=== philo ===
-ELF          >           @       ğ          @ 8  @ ' &       @       @       @       Ø      Ø                                                                                        ˆ      ˆ                                        =       =                     @       @       @      Ø      Ø                   ˜L      ˜\      ˜\      x      €                   èL      è\      è\                                 8      8      8      0       0                    h      h      h      D       D              Såtd   8      8      8      0       0              Påtd   Ì@      Ì@      Ì@      ü       ü              Qåtd                                                  Råtd   ˜L      ˜\      ˜\      h      h             /lib64/ld-linux-x86-64.so.2               GNU   À          € À                   GNU V•`‰Êöà`ñ!8÷Dúzıñ0¢         GNU                                             ÑeÎm                            |                      .                                            ³                      w                      5                                          F                                           R                      P                     Ü                                             ,                       Æ                      B                     ¥                      k                      ‰                      i                                           ï                      W                     ˜                      d                      z                     \                     Œ  "                    __gmon_start__ _ITM_deregisterTMCloneTable _ITM_registerTMCloneTable __tsan_init __tsan_func_entry printf __tsan_func_exit __tsan_read8 pthread_create __tsan_read4 __tsan_write4 pthread_mutex_init pthread_mutex_destroy pthread_mutex_lock pthread_mutex_unlock gettimeofday __tsan_write16 __tsan_read16 usleep __tsan_read1 __tsan_write8 malloc free pthread_join __stack_chk_fail __libc_start_main __cxa_finalize libtsan.so.2 libc.so.6 GLIBC_2.34 GLIBC_2.4 GLIBC_2.2.5                                    ¨         ´‘–   ²     ii   ½     ui	   Ç       \             Q      ¨\             ì      °\             ö      ¸\             ‹'      À\             .      È\             /      Ğ\              0      Ø\                    à\             À      `             `      ˜\                    Ø_                    à_                    è_                    ğ_                    ø_                     _                    (_                    0_                    8_                    @_                    H_                    P_                    X_         	           `_         
-           h_                    p_                    x_                    €_                    ˆ_                    _                    ˜_                     _                    ¨_                    °_                    ¸_                    À_                    È_                    Ğ_                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            óúHƒìH‹ÉO  H…ÀtÿĞHƒÄÃ     ÿ5êN  ÿ%ìN  @ óúh    éâÿÿÿfóúh   éÒÿÿÿfóúh   éÂÿÿÿfóúh   é²ÿÿÿfóúh   é¢ÿÿÿfóúh   é’ÿÿÿfóúh   é‚ÿÿÿfóúh   érÿÿÿfóúh   ébÿÿÿfóúh	   éRÿÿÿfóúh
-   éBÿÿÿfóúh   é2ÿÿÿfóúh   é"ÿÿÿfóúh   éÿÿÿfóúh   éÿÿÿfóúh   éòşÿÿfóúh   éâşÿÿfóúh   éÒşÿÿfóúh   éÂşÿÿfóúh   é²şÿÿfóúh   é¢şÿÿfóúh   é’şÿÿfóúh   é‚şÿÿfóúÿ%FN  fD  óúÿ%fM  fD  óúÿ%^M  fD  óúÿ%VM  fD  óúÿ%NM  fD  óúÿ%FM  fD  óúÿ%>M  fD  óúÿ%6M  fD  óúÿ%.M  fD  óúÿ%&M  fD  óúÿ%M  fD  óúÿ%M  fD  óúÿ%M  fD  óúÿ%M  fD  óúÿ%şL  fD  óúÿ%öL  fD  óúÿ%îL  fD  óúÿ%æL  fD  óúÿ%ŞL  fD  óúÿ%ÖL  fD  óúÿ%ÎL  fD  óúÿ%ÆL  fD  óúÿ%¾L  fD  óúÿ%¶L  fD  óú1íI‰Ñ^H‰âHƒäğPTE1À1ÉH=!  ÿ³L  ôf.„     H=¹L  H²L  H9øtH‹vL  H…Àt	ÿà€    Ã€    H=‰L  H5‚L  H)şH‰ğHÁî?HÁøHÆHÑştH‹=L  H…ÀtÿàfD  Ã€    óú€=EL   u+UHƒ=L   H‰åtH‹=&L  è¹ıÿÿèdÿÿÿÆL  ]Ã Ã€    óúéwÿÿÿóúUH‰å‰øˆEü€}ü/~€}ü9¸   ë¸    ]ÃóúUH‰å‰øˆEü€}ü t€}ü~€}ü¸   ë¸    ]ÃóúUH‰åHƒìH‰}øH‰uğH‹EH‰Çè³ıÿÿH‹EğH‰ÆHy+  H‰Ç¸    èhşÿÿHƒ}ø tH‹EøH‰Çè=  ¿   è+ıÿÿóúUH‰åHƒìH‰}ø‰uô‰UğH‹EH‰ÇèYıÿÿH‹EøHˆˆ   H‹Eøº   H‰ÎH‰Çè  ƒ}ğu;H‹EøH°   ¾    H‰Çè   H‰Á‹Eô‰ÂH‰ÎHê*  H‰Ç¸    èÎıÿÿéó   ƒ}ğ u;H‹EøH°   ¾    H‰Çè¿  H‰Á‹Eô‰ÂH‰ÎHÂ*  H‰Ç¸    èıÿÿé²   ƒ}ğu8H‹EøH°   ¾    H‰Çè~  H‰Á‹Eô‰ÂH‰ÎH“*  H‰Ç¸    èLıÿÿëtƒ}ğu8H‹EøH°   ¾    H‰Çè@  H‰Á‹Eô‰ÂH‰ÎHi*  H‰Ç¸    èıÿÿë6H‹EøH°   ¾    H‰Çè  H‰Á‹Eô‰ÂH‰ÎHE*  H‰Ç¸    èÖüÿÿH‹EøHˆˆ   H‹Eøº   H‰ÎH‰Çè²  èBüÿÿÉÃóúUH‰åè²ûÿÿ]ÃóúUH‰åSHìø   ‰½ÿÿÿH‰µ ÿÿÿdH‹%(   H‰Eè1ÀH‹EH‰Çè˜ûÿÿH‹• ÿÿÿ‹ÿÿÿH… ÿÿÿ‰ÎH‰Çè	  Ç…ÿÿÿ    é‹   H… ÿÿÿHƒÀ H‰ÇèØúÿÿH‹@ÿÿÿ‹…ÿÿÿHcĞH‰ĞHÁàHĞHÁàHH… ÿÿÿHƒÀ H‰Çè£úÿÿH‹@ÿÿÿ‹…ÿÿÿHcĞH‰ĞHÁàHĞHÁàHÈHƒÀH‰ÙHd  ¾    H‰ÇèWûÿÿƒ…ÿÿÿH… ÿÿÿH‰Çè‘ûÿÿ‹… ÿÿÿ9…ÿÿÿŒTÿÿÿH… ÿÿÿH• ÿÿÿHz0H‰ÁHV  H‰Â¾    èûÿÿH… ÿÿÿHƒÀH‰ÇèÓúÿÿÇ…8ÿÿÿ   H… ÿÿÿH‰Çè"  »    èÀúÿÿ‰ØH‹UèdH+%(   tèÊúÿÿH‹]øÉÃóúUH‰åèúÿÿ]ÃóúUH‰åHƒì H‰}øH‰uğ‰UìH‹EH‰ÇèúÿÿHƒ}ø tHƒ}ğ uH‹EøH8(  H‰ÖH‰Çèüÿÿƒ}ì u0H‹Eğ¾    H‰Çèwùÿÿ…ÀtH‹EøH(  H‰ÖH‰Çèêûÿÿéˆ   ƒ}ìu(H‹EğH‰ÇèÖùÿÿ…ÀtH‹EøHò'  H‰ÖH‰Çè¹ûÿÿëZƒ}ìu(H‹EğH‰Çè˜ùÿÿ…ÀtH‹EøH×'  H‰ÖH‰Çè‹ûÿÿë,ƒ}ìu&H‹EğH‰Çèêùÿÿ…ÀtH‹EøH¹'  H‰ÖH‰Çè]ûÿÿè‹ùÿÿÉÃóúUH‰åHƒì H‰}øH‰uğH‰Uè‰MäH‹EH‰ÇèùÿÿH‹MğH‹Eøº   H‰ÎH‰Çè´şÿÿH‹EèH‰Çè-ùÿÿH‹Eè‹Uä‰H‹MğH‹Eøº   H‰ÎH‰Çè‡şÿÿèùÿÿÉÃóúUH‰åSHƒì8H‰}ØH‰uĞH‰UÈH‹EH‰ÇèøÿÿH‹MĞH‹EØº   H‰ÎH‰ÇèBşÿÿH‹EÈH‰Çè+ùÿÿH‹EÈ‹ ‰EìH‹MĞH‹EØº   H‰ÎH‰Çèşÿÿ‹]ìè¢øÿÿ‰ØH‹]øÉÃóúUH‰åèøÿÿ]ÃóúUH‰åSHƒìH‰}èH‰uàH‹EH‰Çè
-øÿÿH‹EèHH8H‹Eèº   H‰ÎH‰Çè¹ıÿÿH‹EèHƒÀH‰ÇèøÿÿH‹Eè‹@XH‹EèHƒÀH‰ÇèøÿÿH‹Eè‰XH‹EèHƒÀH‰ÇèmøÿÿH‹Eè‹XH‹EèH‰ÇèZøÿÿH‹Eè‹ 9Ã|H‹EèH°   ¾    H‰ÇèI÷ÿÿH‹EèHH8H‹Eèº   H‰ÎH‰Çè(ıÿÿH‹EèHH8H‹Eèº   H‰ÎH‰ÇèıÿÿH‹EèHƒÀH‰Çèñ÷ÿÿH‹Eè‹XH‹EèH‰ÇèŞ÷ÿÿH‹Eè‹ 9ÃŒ–   H‹EèHH`H‹Eèº   H‰ÎH‰Çè¿üÿÿH‹EàHƒÀH‰ÇèÔöÿÿH‹EèH°   H‰Çèb÷ÿÿH‹MàH‹EèH‹¸   H‹€°   H‰AH‰QH‹EèHH`H‹Eèº   H‰ÎH‰ÇècüÿÿH‹EèHH8H‹Eèº   H‰ÎH‰ÇèGüÿÿë!H‹EèHH8H‹Eèº   H‰ÎH‰Çè)üÿÿéüşÿÿè´öÿÿH‹]øÉÃóúUH‰åSHƒì8H‰}ÈH‹EH‰Çè0öÿÿH‹EÈH‰EèH‹EèHH8H‹Eèº   H‰ÎH‰Çè×ûÿÿH‹EèHƒÀH‰Çè¼öÿÿH‹Eè‹XH‹EèH‰Çè©öÿÿH‹Eè‹ 9Ã|H‹EèHH8H‹Eèº   H‰ÎH‰Çèûÿÿë!H‹EèHH8H‹Eèº   H‰ÎH‰ÇèpûÿÿéxÿÿÿÇEà    ÇEÜ    és  H‹EèHH`H‹Eèº   H‰ÎH‰Çè<ûÿÿH‹EèHƒÀ H‰ÇèáôÿÿH‹EèH‹H ‹EÜHcĞH‰ĞHÁàHĞHÁàHÈHƒÀ¾    H‰Çè  H‰ÃH‹EèHƒÀH‰ÇèŞõÿÿH‹Eè‹@H˜H9ÃÀ¶À‰EäH‹EèHƒÀH‰Çè¹õÿÿH‹Eè‹@ƒøÿtaH‹EèHƒÀ H‰Çè]ôÿÿH‹EèH‹H ‹EÜHcĞH‰ĞHÁàHĞHÁàHHCH‰Çèqõÿÿ‹[H‹EèHƒÀH‰Çè^õÿÿH‹Eè‹@9Ã|¸   ë¸    EàH‹EèHH`H‹Eèº   H‰ÎH‰Çè3úÿÿƒ}ä tDH‹EèHPH‹EèHp8H‹Eè¹    H‰Çèûÿÿ‹EÜHH‹Eèº   ‰ÎH‰Çè­öÿÿ»    éŒ   ƒEÜH‹EèH‰ÇèÎôÿÿH‹Eè‹ 9EÜŒrşÿÿH‹EèH‰Çè³ôÿÿH‹Eè‹ 9Eà|(H‹EèHPH‹EèHp8H‹Eè¹    H‰ÇèŸúÿÿ»    ë.H‹EèHPH‹EèHH8H‹EèH‰ÎH‰Çèíúÿÿ…Àtéøıÿÿ»    èíóÿÿH‰ØH‹]øÉÃóúUH‰åSHƒì(H‰}Ø‰uÔH‹EH‰Çèdóÿÿƒ}Ô uH‹EØHƒÀH‰ÇèôÿÿH‹EØ‹@‰EäëKƒ}ÔuH‹EØHƒÀH‰ÇèìóÿÿH‹EØ‹@‰Eäë)ƒ}ÔuH‹EØHƒÀH‰ÇèÊóÿÿH‹EØ‹@‰EäëÇEä    ÇEè    ÇEì
-   ë@H‹EØHPH‹EØHH8H‹EØH‰ÎH‰Çèúÿÿ…Àu»   ë#‹EìiÀè  ‰Çè=òÿÿ‹EìEè‹Eè;Eä|¸»    èõòÿÿ‰ØH‹]øÉÃóúUH‰åATSHƒì H‰}ØH‰uĞH‹EH‰ÇèjòÿÿH‹EĞH‰ÇèóÿÿH‹EĞ‹ ƒà…À…¥  H‹EØHƒÀ(H‰Çè½ñÿÿH‹EØL‹`(H‹EĞH‰ÇèéòÿÿH‹EĞ‹H‹EØH‰Çè×òÿÿH‹EØ‹0‰Ø™÷ş‰Ñ‰ÈHcĞH‰ĞHÁàHĞHÁàIH‹EØº   H‰ÎH‰Çèª÷ÿÿH‹EØHPH‹EØHH8H‹EØH‰ÎH‰Çèùÿÿ…ÀuxH‹EØHƒÀ(H‰Çè,ñÿÿH‹EØL‹`(H‹EĞH‰ÇèXòÿÿH‹EĞ‹H‹EØH‰ÇèFòÿÿH‹EØ‹0‰Ø™÷ş‰Ñ‰ÈHcĞH‰ĞHÁàHĞHÁàIH‹EØº   H‰ÎH‰Çè÷ÿÿ»   é¤  H‹EĞH‰ÇèøñÿÿH‹EĞ‹H‹EØº   ‰ÎH‰Çè¤óÿÿH‹EØHƒÀ(H‰ÇèğÿÿH‹EØH‹X(H‹EĞH‰Çè»ñÿÿH‹EĞ‹ HcĞH‰ĞHÁàHĞHÁàHƒè(HH‹EØº   H‰ÎH‰Çè“öÿÿH‹EØHPH‹EØHH8H‹EØH‰ÎH‰Çèõ÷ÿÿ…À…Ï   H‹EØHƒÀ(H‰ÇèğÿÿH‹EØL‹`(H‹EĞH‰Çè=ñÿÿH‹EĞ‹H‹EØH‰Çè+ñÿÿH‹EØ‹0‰Ø™÷ş‰Ñ‰ÈHcĞH‰ĞHÁàHĞHÁàIH‹EØº   H‰ÎH‰ÇèşõÿÿH‹EØHƒÀ(H‰Çè£ïÿÿH‹EØH‹X(H‹EĞH‰ÇèÏğÿÿH‹EĞ‹ HcĞH‰ĞHÁàHĞHÁàHƒè(HH‹EØº   H‰ÎH‰Çè§õÿÿ»   é2  H‹EĞH‰Çè†ğÿÿH‹EĞ‹H‹EØº   ‰ÎH‰Çè2òÿÿé‰  H‹EØHƒÀ(H‰ÇèïÿÿH‹EØH‹X(H‹EĞH‰ÇèDğÿÿH‹EĞ‹ HcĞH‰ĞHÁàHĞHÁàHƒè(HH‹EØº   H‰ÎH‰ÇèõÿÿH‹EØHPH‹EØHH8H‹EØH‰ÎH‰Çè~öÿÿ…ÀuaH‹EØHƒÀ(H‰ÇèîÿÿH‹EØH‹X(H‹EĞH‰ÇèÊïÿÿH‹EĞ‹ HcĞH‰ĞHÁàHĞHÁàHƒè(HH‹EØº   H‰ÎH‰Çè¢ôÿÿ»   é-  H‹EĞH‰ÇèïÿÿH‹EĞ‹H‹EØº   ‰ÎH‰Çè-ñÿÿH‹EØHƒÀ(H‰ÇèîÿÿH‹EØL‹`(H‹EĞH‰ÇèDïÿÿH‹EĞ‹H‹EØH‰Çè2ïÿÿH‹EØ‹0‰Ø™÷ş‰Ñ‰ÈHcĞH‰ĞHÁàHĞHÁàIH‹EØº   H‰ÎH‰ÇèôÿÿH‹EØHPH‹EØHH8H‹EØH‰ÎH‰Çègõÿÿ…À…Ï   H‹EØHƒÀ(H‰ÇèƒíÿÿH‹EØH‹X(H‹EĞH‰Çè¯îÿÿH‹EĞ‹ HcĞH‰ĞHÁàHĞHÁàHƒè(HH‹EØº   H‰ÎH‰Çè‡óÿÿH‹EØHƒÀ(H‰Çè,íÿÿH‹EØL‹`(H‹EĞH‰ÇèXîÿÿH‹EĞ‹H‹EØH‰ÇèFîÿÿH‹EØ‹0‰Ø™÷ş‰Ñ‰ÈHcĞH‰ĞHÁàHĞHÁàIH‹EØº   H‰ÎH‰Çèóÿÿ»   é¤  H‹EĞH‰ÇèøíÿÿH‹EĞ‹H‹EØº   ‰ÎH‰Çè¤ïÿÿH‹EØHH`H‹EØº   H‰ÎH‰ÇèÎòÿÿH‹EĞHƒÀ¾    H‰Çè¾ìÿÿH‹EĞHƒÀH‰ÇèíÿÿH‹EĞ‹@XH‹EĞHƒÀH‰ÇèíÿÿH‹EĞ‰XH‹EØHH`H‹EØº   H‰ÎH‰ÇèlòÿÿH‹EĞH‰ÇèUíÿÿH‹EĞ‹H‹EØº    ‰ÎH‰ÇèïÿÿH‹EØ¾    H‰Çèçøÿÿ‰EìH‹EØHƒÀ(H‰ÇèØëÿÿH‹EØH‹X(H‹EĞH‰ÇèíÿÿH‹EĞ‹ HcĞH‰ĞHÁàHĞHÁàHƒè(HH‹EØº   H‰ÎH‰ÇèÜñÿÿH‹EØHƒÀ(H‰ÇèëÿÿH‹EØL‹`(H‹EĞH‰Çè­ìÿÿH‹EĞ‹H‹EØH‰Çè›ìÿÿH‹EØ‹0‰Ø™÷ş‰Ñ‰ÈHcĞH‰ĞHÁàHĞHÁàIH‹EØº   H‰ÎH‰Çènñÿÿ‹]ìèûëÿÿ‰ØHƒÄ [A\]ÃóúUH‰åSHƒì(H‰}ØH‹EH‰ÇèsëÿÿH‹EØH‰EàH‹EàHƒÀ H‰ÇèÛêÿÿH‹EàH‹@ H‰EèH‹UàH‹EèH‰ÖH‰ÇèóÿÿH‹UàH‹EèH‰ÖH‰Çèœøÿÿ…Àt»    ëkH‹EàH‰ÇèÒëÿÿH‹Eà‹H‹Eèº   ‰ÎH‰Çè~íÿÿH‹Eè¾   H‰Çèd÷ÿÿ…Àt»    ë*H‹EàH‰Çè‘ëÿÿH‹Eà‹H‹Eèº   ‰ÎH‰Çè=íÿÿéwÿÿÿèëÿÿH‰ØH‹]øÉÃóúUH‰åèxêÿÿ]ÃóúUH‰åSHƒì(H‰}ØH‰uĞH‹EH‰ÇèuêÿÿHƒ}Ğ tH‹EĞH‰Çè"êÿÿH‹EĞ¶ „ÀuH‹EØHÜ  H‰ÖH‰ÇènìÿÿëHƒEĞH‹EĞH‰ÇèîéÿÿH‹EĞ¶ „Àt!H‹EĞH‰Çè×éÿÿH‹EĞ¶ ¾À‰Çèìÿÿ…ÀuÃH‹EĞH‰Çè¶éÿÿH‹EĞ¶ „Àt/H‹EĞH‰ÇèŸéÿÿH‹EĞ¶ <-uH‹EØHY  H‰ÖH‰Çèëëÿÿë3H‹EĞH‰ÇèpéÿÿH‹EĞ¶ „ÀtH‹EĞH‰ÇèYéÿÿH‹EĞ¶ <+uHƒEĞHÇEè    ë;H‹UèH‰ĞHÁàHĞHÀH‰ÃH‹EĞH‰ÇèéÿÿH‹EĞ¶ ¾Àƒè0H˜HØH‰EèHƒEĞH‹EĞH‰ÇèøèÿÿH‹EĞ¶ „Àt!H‹EĞH‰ÇèáèÿÿH‹EĞ¶ ¾À‰Çèéêÿÿ…Àu¸   €H9Eè|H‹EØH†  H‰ÖH‰ÇèëÿÿH‹]èèBéÿÿH‰ØH‹]øÉÃóúUH‰åATSHƒì H‰}ØH‹EH‰ÇèºèÿÿÇEì    é  H‹EØHƒÀ H‰ÇèèÿÿH‹EØH‹H ‹EìHcĞH‰ĞHÁàHĞHÁàH‹EìD`H‰ØH‰Çè¼èÿÿD‰#H‹EØHƒÀ H‰ÇèÙçÿÿH‹EØH‹H ‹EìHcĞH‰ĞHÁàHĞHÁàHHC H‰ÇèmèÿÿH‹EØH‰C H‹EØHƒÀ H‰Çè•çÿÿH‹EØH‹H ‹EìHcĞH‰ĞHÁàHĞHÁàHHCH‰Çè9èÿÿÇC    H‹EØHƒÀ(H‰ÇèRçÿÿH‹EØH‹H(‹EìHcĞH‰ĞHÁàHĞHÁàHÁH‹EØº    H‰ÎH‰ÇèjíÿÿƒEìH‹EØH‰ÇèOèÿÿH‹EØ‹ 9EìŒÒşÿÿèÛçÿÿHƒÄ [A\]ÃóúUH‰åATSHƒì0H‰}Ø‰uÔH‰UÈH‹EH‰ÇèKçÿÿH‹EØHƒÀH‰Çè‹çÿÿH‹EØÇ@    ƒ}Ô~ƒ}Ô~H­  H‰Æ¿    è=éÿÿÇEì   ëb‹EìH˜HÅ    H‹EÈHH‰ßèjæÿÿH‹H‰Æ¿    èDüÿÿH‰Â‹EìXÿA‰ÔHcÃH…    H‹EØHĞH‰ÇèçÿÿH‹EØHcÓD‰$ƒEì‹Eì;EÔ|–ƒ}ÔuH‹EØHƒÀH‰Çè×æÿÿH‹EØÇ@ÿÿÿÿH‹EØHƒÀH‰Çè¼æÿÿH‹EØÇ@    H‹EØH‰ÇèçÿÿH‹EØ‹ HcĞH‰ĞHÁàHĞHÁàH‰ÇèFæÿÿH‰ÃH‹EØHƒÀ H‰ÇècæÿÿH‹EØH‰X H‹EØH‰ÇèÏæÿÿH‹EØ‹ HcĞH‰ĞHÁàHĞHÁàH‰Çè æÿÿH‰ÃH‹EØHƒÀ(H‰ÇèæÿÿH‹EØH‰X(H‹EØH‰ÇèğüÿÿH‹EØHH8H‹EØº    H‰ÎH‰ÇèxëÿÿH‹EØHH`H‹EØº    H‰ÎH‰Çè\ëÿÿH‹EØHˆˆ   H‹EØº    H‰ÎH‰Çè=ëÿÿH‹EØHƒÀH‰Çè²åÿÿH‹EØÇ@   è²åÿÿHƒÄ0[A\]ÃóúUH‰åHƒì H‰}èH‹EH‰Çè,åÿÿH‹EèH‰Çè  ÇEü    ëGH‹EèHƒÀ(H‰Çè‡äÿÿH‹EèH‹H(‹EüHcĞH‰ĞHÁàHĞHÁàHÁH‹Eèº   H‰ÎH‰ÇèŸêÿÿƒEüH‹EèH‰Çè„åÿÿH‹Eè‹ 9Eü|¢H‹EèHH`H‹Eèº   H‰ÎH‰ÇèhêÿÿH‹EèHˆˆ   H‹Eèº   H‰ÎH‰ÇèIêÿÿH‹EèHH8H‹Eèº   H‰ÎH‰Çè-êÿÿH‹EèHƒÀ H‰ÇèÒãÿÿH‹EèH‹@ H‰ÇèòäÿÿH‹EèHƒÀ(H‰Çè²ãÿÿH‹EèH‹@(H‰ÇèÒäÿÿè}äÿÿÉÃóúUH‰åèíãÿÿ]ÃóúUH‰åSHƒì(H‰}ØH‹EH‰ÇèîãÿÿÇEì    H‹EØHƒÀH‰Çè—äÿÿH‹EØ‹@ƒø   ëQH‹EØHƒÀ H‰Çè5ãÿÿH‹EØH‹H ‹EìHcĞH‰ĞHÁàHĞHÁàHHCH‰Çè	ãÿÿH‹C¾    H‰ÇèXäÿÿƒEìH‹EØH‰Çè(äÿÿH‹EØ‹ 9Eì|˜H‹EØHƒÀ0H‰ÇèÍâÿÿH‹EØH‹@0¾    H‰Çèäÿÿè“ãÿÿH‹]øÉÃóúUH‰åèÿâÿÿ]ÃóúUH‰åSHƒìHH‰}¸H‰u°dH‹%(   H‰Eè1ÀH‹EH‰ÇèíâÿÿHƒ}° uHEĞ¾    H‰Çè¥âÿÿHEĞH‰E°H‹E°H‰ÇèAâÿÿH‹E°H‹H‹E¸H‰Çè.âÿÿH‹E¸H‹ H)ÃH‰ÚH‰UÀH‹E°HƒÀH‰ÇèâÿÿH‹E°H‹XH‹E¸HƒÀH‰ÇèõáÿÿH‹E¸H‹@H)ÃH‰ÚH‰UÈH‹EÀHiğè  H‹MÈHºÏ÷Sã¥›Ä H‰ÈH÷êHÁúH‰ÈHÁø?H)ÂHèâÿÿH‰ØH‹UèdH+%(   tè–âÿÿH‹]øÉÃóúUH‰åèãáÿÿ]Ã óúHƒìHƒÄÃ                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     error: %s
- %ld %d has taken a fork
- %ld %d is eating
- %ld %d is sleeping
- %ld %d is thinking
- %ld %d died
- mtx_op error mtx_init error mtx_destroy error
- mtx_lock error
- mtx_unlock error
- args error  ;ø      TÏÿÿ,  ÔĞÿÿT  äĞÿÿl  TÒÿÿ  =Óÿÿ„  dÓÿÿ¤  ‘ÓÿÿÄ  éÓÿÿà  …Õÿÿ   ”Õÿÿ$   ×ÿÿH  /×ÿÿl  <ØÿÿŒ  °Øÿÿ¬  *ÙÿÿĞ  9Ùÿÿô  Ûÿÿ  àİÿÿ<  ×Şÿÿ`  Ôåÿÿ„  ¿æÿÿ¨  ÎæÿÿÌ  ‹èÿÿğ  óéÿÿ  ìÿÿ8  JíÿÿX  Yíÿÿ|  8îÿÿ   GîÿÿÄ  Tïÿÿè         zR x        8Ñÿÿ&    D    $   4    Îÿÿ€   FJw€ ?9*3$"       \   xÏÿÿ              t   pÏÿÿp             Œ   ±Ñÿÿ'    E†C^      ¬   ¸Ñÿÿ-    E†Cd      Ì   ÅÑÿÿX    E†C      è   Òÿÿœ   E†C“       }Óÿÿ    E†CF           ,  hÓÿÿŒ   E†CHƒ{      P  ĞÔÿÿ    E†CF          t  »Ôÿÿ   E†C    ”  ¨Õÿÿt    E†Ck      ´  üÕÿÿz    E†CEƒl       Ø  RÖÿÿ    E†CF           ü  =ÖÿÿŞ   E†CEƒĞ         ÷×ÿÿÉ   E†CEƒ»      D  œÚÿÿ÷    E†CEƒé       h  oÛÿÿı   E†CGŒƒí    Œ  Hâÿÿë    E†CEƒİ       °  ãÿÿ    E†CF           Ô  úâÿÿ½   E†CEƒ¯      ø  “äÿÿh   E†CGŒƒX      ×åÿÿ)   E†CGŒƒ   @  Üçÿÿ.   E†C%     `  êèÿÿ    E†CF           „  Õèÿÿß    E†CEƒÑ       ¨  éÿÿ    E†CF           Ì  {éÿÿ   E†CEƒÿ      ğ  dêÿÿ    E†CF                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               Q      ì      ö      ‹'      .      /       0             À             ›             ¨                           00              ˜\      !                      \             @              à\                    õşÿo    °                          Ø      
-       Ó                                          _             (                           `
-             à             €      	                            ûÿÿo          şÿÿo           ÿÿÿo           ğÿÿo    d      ùÿÿo    
-                                                                                       è\                      0      @      P      `      p      €                   °      À      Ğ      à      ğ                          0      @      P      `      p      €                                                            `      GCC: (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0                              ,    æ       	      W                      ,    ­       `      ›                      ,           û      
-                      ,    í             •                      ,    à       š'      ‹                      ,    Ç       %.      î                       ,           /                            â       	\   !L           
-‡  ‡¨   Tid ®<   *   u32 Ÿ¨   Ğ  ¯7   ÿÿÿÿ   °7    È  ³<   f   À  ´s    ã  ¨  	   Éœ   u64  ´   H   G   X   x   š  ¸Ğ   ¹    '   »ã   ¼    .   ¾ö   ¿    “  Á	  Â    U   Ä  Å        Ç6  È   Ú    Ü  ÊI  Ë    s  Í\  Î    6   Ğo  Ñ    è  Ó‚  Ô       Ö•  ×    ¡  Ü¨  İ    C   †   >   ‘   «  ×  	˜\      À  {  !$ Ã     N  5  ú   	      W      H   C   H      !    
-  int Â     _   n  ¢_   ƒ   	  ƒ   Š   ½    Ã     f    3  r    >   '  3ò   —  5#ò    ª  6#ò    Ê   "  7Ê   õ  (y  î  X    c  5   S  X   =  5   ¶   X   k  "	Q     #	Q   ¡  $÷    —  .   (C	°  	÷  E  	  F°  	s  G_    ƒ   À  .   ' S  H…  [  y  F   À  ï  !ğ  ñ  À>€  Ó  @]   €  AX   ù  BX   ;  Cm   à  Dr  (?  EÌ  0d  FØ  8í  GØ  `I  HØ  ˆ  I€  ° Ë  "›   op 5   $µ  CRT  DST LK ULK  ±  *Œ  ¾  5   ,ò  EAT  
-  
-M  
-ş  DIE  4  3Á  é  (5L  id 7X      8X   D  9Ì    :€  ñ  ;L    ä    <ş  X   m  .    Q  Ø  ‰  V_   ’  ’  ’   €  æ  Q±  L  r  µ   ô  ôÄ  X    {  RÔ  L   Ù  	kX   ì      |  µ      œ      œ3  ñ  L  ‘hidx 'X   ‘d¾  5ò  ‘` B  ]      X       œl  ñ  L  ‘hmsg '~   ‘` ‰  X   0      -       œ›  c ƒ   ‘l ¨  X   	      '       œc ƒ   ‘l  W   á  N  ö  ú   `      ›      i  C   H   <      !    
-  int Â     f   n  ¢f   Š   	  ½    À     m    3  y    >   '  3ï   —  5#ï    ª  6#ï    Ç   "  7Ç   õ  (v  î  _    c  5   S  _   =  5   ¶   _   k  "	X     #	X   ¡  $ô    —  .   ó  88¦    :¦  s  ;f    	Š   ¶  
-.   7 ó  >‚  ¶  (C	ò  ÷  E     Fò  s  Gf    	Š     
-.   ' S  HÇ  …   [  v  F     ï  !7  ñ  À>Ç  Ó  @2   €  A_   ù  B_   ;  CB   à  DG  (?  E  0d  F  8í  G  `I  H  ˆ  IÇ  ° Ë  "˜   é  (5!  id 7_      8_   D  9    :Ç  ñ  ;!    +    <Ó  	_   B  
-.    &    {  R\  !   Ã  W<   r  <    å  X<   ˆ  <    ´  Ê_   ­  ²  ¼  Á  >    v  ­  Â  ·  Æ  <   Õ  <    Î  Sï  !  _      ¯  _   `      Œ      œÛ  _   ‘ü}à    ‘ğ}ñ  
-+  ‘~¶      »       i _   ‘Œ~   á   G  N    ú   û      
-      0  C   H      !    
-  int Â     _   n  ¢_   ƒ   	  ƒ   š   .    ½    É     f    3  r    >   '  3ø   —  5#ø    ª  6#ø    Ğ   "  7Ğ   õ  (  î  X    c  5   S  X   =  5   ¶   X   k  "	Q     #	Q   ¡  $ı    —  .    ©    "Š   s  #X    =  $‹  ©  (Cã  ÷  E	    Fã  s  G_    ƒ   ó  .   ' S  Hº  [    F   ó  ï  !#  ñ  À>³  Ó  @S   €  AX   ù  BX   ;  Cc   à  Dh  (?  Eÿ  0d  F  8í  G  `I  H  ˆ  I³  ° Ë  "¡   op 5   $è  	CRT  	DST 	LK 	ULK  ±  *¿  é  (5B  id 7X      8X   D  9ÿ    :³  ñ  ;B        <ô  X   c  .    G    
-(  CX   ‚  ‚   ó  
-  X   œ  ‚   
-Q  X   ±  ‚   
-  X   Ë  ‚  Ë   µ  B  Pç  B  ~    r  X   |      z       œD  ñ  B  ‘Hmtx )h  ‘@val 3D  ‘¸res X   ‘\ X   g        t       œ   ñ  B  ‘hmtx *h  ‘`val 4D  ‘X}  =X   ‘T æ  û            œñ  B  ‘hmtx &h  ‘`op 0è  ‘\  ï   Ğ  N    ú         •      8  C   H   <      !    
-  int Â     f   Ú  ¡5   n  ¢f   	  ½  	  Ç     m    3  …    >   	'  3ö   —  5#ö    ª  6#ö    Î   "  7Î   	õ  (}  î  _    c  5   S  _   =  5   ¶   _   k  "	X     #	X   ¡  $û    —  .   (C	´  
-÷  E  
-  F´  
-s  Gf    ‘   Ä  .   ' S  H‰  [  }  F   Ä  ï  !ô  	ñ  À>„  Ó  @a   €  A_   ù  B_   ;  Cq   à  Dv  (?  EĞ  0d  FÜ  8í  GÜ  `I  HÜ  ˆ  I„  ° Ë  "Ÿ   op 5   $¹  CRT  DST LK ULK  ±  *  ¾  5   ,ö  EAT    M  ş  DIE  4  3Å  	é  (5P  id 7_      8_   D  9Ğ    :„  ñ  ;P    è    <  _   q  .    U  Ü  ƒ  à_   ’  y    r  U_   ²  P  v  ²   _   |  YÑ  P  _   ö   g  Tğ  P  v  ²  _    ‰  Vf          „  Í  	C_   +  0  >    Ÿ   +  æ  QO  P  v  ¹   å  •<    &      ë       œš  arg •<   ‘Hé  —q  ‘Pñ  ˜P  ‘X œ  b_   £      ı      œå  ñ  bP  ‘Hé  b,q  ‘@Å  d_   ‘\ »  H_   ¬      ÷       œL  ñ  HP  ‘H£  H/ö  ‘D—  J_   ‘T•  K_   ‘XŠ  L_   ‘\ Ã  <   ã      É      œ»  arg <   ‘¸ñ  P  ‘Xç  _   ‘L     +_   ‘Tfed ,_   ‘P  ª        Ş      œñ  'P  ‘Xé  7q  ‘P  ã   ®  N  N  ú   š'      ‹      ª  ï  Ö:   C   H      !    
-  int Â     m   n  ¢m   ‘   	  ½    Ç     t    3  €    >   '  3ö   —  5#ö    ª  6#ö    Î   "  7Î   õ  (}  î  f    c  A   S  f   =  A   ¶   f   k  "	_     #	_   ¡  $û    —  :   (C	´  	÷  E  	  F´  	s  Gm    ‘   Ä  :   ' S  H‰  Œ   [  }  F   Ä  ï  !ù  ñ  À>‰  Ó  @)   €  Af   ù  Bf   ;  C9   à  D>  (?  EÕ  0d  Fá  8í  Gá  `I  Há  ˆ  I‰  ° Ë  "Ÿ   op A   $¾  CRT  DST LK ULK  ±  *•  é  (5  id 7f      8f   D  9Õ    :‰  ñ  ;    í    <Ê  f   9  :      á    	¯V  H    
-
-  Nf     ö  	 H   }  .    
-æ  Q—    >  ¾   ¨  Lf   «  ‘    ‰  Mf   ¿  ‘    
-B  PÔ    Œ    {  @è,      .      œ  ñ  @  ‘X(  Bf   ‘l Î  (¿*      )      œa  ñ  (  ‘HÛ  ('f   ‘Dà  (4Ğ  ‘¸/  *f   ‘\   W)      h      œ›  ñ  !  ‘H  f   ‘\ ı  m   š'      ½      œñ    ‘Hstr +Œ   ‘@res m   ‘X  N   s	  
-N  ˆ  ú   %.      î       Å  C   H      !    
-  int Â     a   n  ¢a   	  ½    ¶     h    3  t    >   '  3å   —  5#å    ª  6#å    ½   "  7½   õ  (l  î  Z    c  5   S  Z   =  5   ¶   Z   k  "	S     #	S   ¡  $ê    —  .   (C	£  ÷  Eö     F£  s  Ga    €   ³  .   ' S  Hx  [  l  F   ³  ï  !ã  ñ  À>s  Ó  @Ş   €  AZ   ù  BZ   ;  Cî   à  Dó  (?  E¿  0d  FË  8í  GË  `I  HË  ˆ  Is  ° Ë  "   é  (5Í  id 7Z      8Z   D  9¿    :s  ñ  ;Í    ×    <  Z   î  .    Ò  Ë  5  ÛZ     	l  	   <   
-  %.      ß       œñ  Í  ‘HB  Z   ‘\  ]   z
-  	N  ’  ú   /            f	  C   H   
-<      !    
-  int Â     f   n  ¢f   	  ½    ¹     m    3  y    >   Ë  "“   Í  C_   ç   ì   >    “   ç   ‰  f   /            œ[  beg [  ‘¨end +[  ‘ tmp 
-À   ‘@L  f   ‘°K  f   ‘¸ À    : :!;9!  9:!;9!  $ >!  4 G  & I   :!;9I   :!;9I   :!;9!  	%  
-9:;9   :;9I  4 :;9I<l  4 :;9I<l   :;9I  4 :;9I<     4 :;9I?   I  . ?:;9<    :;9I8   :;9I  $ >   I   !I  (   :;9   :!;9I  	 :!;9I  
-(    :!;9I  I  ! I/  .?:!;9!'<  .?:!;9!'@|  %  $ >  & I  :;9  >I:;9  >I:;9   :;9I8  .?:;9'I<  .?:;9'‡<  .?:;9'I<     .?:;9'I@z  .?:;9'I@z    :;9I8   :;9I   I  $ >   !I  :;9   :!;9I  7 I  	I  
-! I/  .?:;9'I<  .?:!;9!'<   :!;!9I  %     $ >  :;9  & I  :;9   :;9I8  'I  .?:;9'I@|  4 :;9I    4 :;9I    :;9I8   :;9I  $ >   !I   I   :!;9I  :;9   :!;9I  	(   
-.?:!;9!'I<   :!;9I  I  ! I/  :!;9!	  %  $ >  & I  >I:;9   :;9I8  .?:;9'<  .?:;9'I@|  4 :;9I  .?:;9'@|  .?:;9'@|    :;9I8   I   :;9I  $ >  4 :!;9I   !I  (    :!;9I  	:;9  
- :!;9I  (   .?:;9'I<  .?:!;9!'<  7 I  I  ! I/  .?:!;9!'I@|   :!;9I  .:!;9!'I@|  %     $ >  :;9  >I:;9  >I:;9   :;9I8  .?:;9'I<  U  4 :;9I  .:;9'@|    :;9I8   :;9I  $ >   I   !I   :!;9I  :;9  (   	 :!;9I  
-.?:!;9!'<  4 :!;9!I  I  ! I/  .?:!;9!'I<  .?:!;9!'@|  %     $ >  :;9  >I:;9   :;9I8  .?:;9'<  .?:;9'I<  .:;9'@|  .:;9'I@|   :;9I  4 :;9I    :;9I8  $ >   :;9I  :;9   !I   :!;9I  I  ! I/  	 I  
-%     $ >  :;9   :;9I8  .?:;9'I<  .?:;9'@|   :;9I  4 :;9I   $ >   :;9I  7 I   :!;9I8   I   !I   :!;!9I  4 :!;9!I  	%  
-   $ >  :;9  .?:;9'I<  .?:;9'I@|  4 :;9I   D     <   û             ¡   n   Ï   é   n       ^   û      ú   ?  b  ‹  
-5   5   ·  ˜  ©  ¿  Î  İ   å  î   		      É f fX .Y1É f f fX .Y1<»Ÿu»¢X»×g 
-óg 
-óg 
-Ég Ê ­$< Ã     Y   û      ú   ?  b  ‹  	ö   ö   ·  ˜  ©  ¿  Î  İ   ı   	`      º¡ÉFYM@fJJ+ e! t J¼)»Ÿ     Y   û      ú   ?  b  ‹  	      ·  ˜  ©  ¿  Î  İ   ı   	û      f» tuY f K
-Ÿ f ºK
-u f ºK
-u f ºKŸ?»uK»>‚½uK	uŸf n    b   û      ú   ?  b  ‹    
-      ·  ˜  ©  ¿  Î  İ   >  G   	      J»$ä"#.ÖKÉ¯$$.Ö„$8­­0w¬w¾…$$.ÖL­0z¬Xu	uZ $(òfS ¬D 	 f×&ä. È6 ò? ¬U .& ä JX . X=­hóƒ  t‚ÖÈÖZóv ÖhJX	"Ÿ“<¿×
-=×
-=×>	uuu0 ÖKu
-ua	‰Ÿ…fõÖ<ô$<7 )ÖºÖu Ö¼%<8 *ÖºÖuØ)$< u Öô%<8 *ÖºÖå%< uØ.$< u Ö¼%< uØ)$<7 )ÖºÖu Öô%< å%<8 *ÖºÖuØô­‚Kä‘åó­#< å#<6 (ÖºÖ	uƒ¯¾ó=1 .K­ó K­í¦     b   û      ú   V  ?  b  ‹  
-N   N     ·  ˜  ©  ¿  Î  İ   å   	š'      J½ t .KY/	W. J . L. J .Ku
-. J .KYƒ0<XXu	U. J . O­	Y»h.½uÊò#t/ò¬uò¬gò<	gz‚ÖŞ¡?/ fg=u/0J  f	(G‡×Ÿ%g ò$= òó»­­'u ò½	»u ò<
-gÖ]­×$òóòÉ<      Y   û      ú   ?  b  ‹  	ˆ   ˆ   ·  ˜  ©  ¿  Î  İ   ı   	%.      ½åä	’ ò¬ƒ!ÖÍ"t —     J   û      ú   ?  b    ’   ’   ·  ˜  İ   G   	/      J£v¼.	ä!t
-òŸ"¬"» __hwasan tid_t __interception kMainTid __dsan __dfsan __ubsan long long unsigned int __msan GNU C++14 13.3.0 -mshstk -mtune=generic -march=x86-64 -g -O2 -std=gnu++14 -fPIC -fno-builtin -fno-exceptions -fno-rtti -funwind-tables -fvisibility=hidden -fcf-protection=full -fno-omit-frame-pointer -fasynchronous-unwind-tables -fstack-protector-strong -fstack-clash-protection __scudo __tsan_init __sanitizer __lsan __asan __memprof __local_tsan_preinit kInvalidStackID kInvalidTid __tsan uptr __xray t_table __data FORK tv_sec short int t_philo meal_stamp __pthread_internal_list heartbeat print_mtx pthread_mutex_t __count __spins __align destroy_table is_whitespace __prev start_stamp __next t_op __kind long long int t_timer props printf forks mtx_op hb_mtx exit barier unsigned char meals __size SLEEP short unsigned int t_action __nusers t_mutex GNU C17 13.3.0 -mtune=generic -march=x86-64 -g -fsanitize=thread -fasynchronous-unwind-tables -fstack-protector-strong -fstack-clash-protection -fcf-protection __lock __pthread_mutex_s __time_t __elision timeval __pthread_list_t tv_usec philos exit_error THINK __owner t_thread table_mtx __suseconds_t print_status get_time_diff pthread_t __list is_num main pthread_create hb_routine table_create argc argv philo_routine pthread_attr_t pthread_mutex_init pthread_mutex_lock pthread_mutex_unlock pthread_mutexattr_t pthread_mutex_destroy mtx_setval mtx_getval n_val usleep delta dead s_time ph_eat a_type philo_wait_start ph_action act_res gettimeofday __useconds_t c_philo size_t malloc ft_atoi free threads_wait c_idx init_setup c_fork c_arg pthread_join c_thread us_diff /build/gcc-13-fG75Ri/gcc-13-13.3.0/build/x86_64-linux-gnu/libsanitizer/tsan ../../../../src/libsanitizer/tsan/tsan_preinit.cpp ../../../../src/libsanitizer/tsan ../../../../src/libsanitizer/sanitizer_common sanitizer_internal_defs.h tsan_interface.h /home/borov/projects/42_folder/circle_3/philosophers/philo helpers.c /usr/include/x86_64-linux-gnu/bits /usr/include/x86_64-linux-gnu/bits/types /usr/include struct_timeval.h thread-shared-types.h struct_mutex.h pthreadtypes.h philo.h stdlib.h stdio.h main.c pthread.h mtx_op.c p_routine.c /usr/include/x86_64-linux-gnu/sys unistd.h time.h table.c /usr/lib/gcc/x86_64-linux-gnu/13/include stddef.h threads.c timer.c          ‹	“	”	                                   ñÿ                	     Œ                  ñÿ                     P                    €              3     À              I     `             U     à\              |                    ˆ     Ø\              §    ñÿ                ¸    ñÿ                Â     Q             Ñ    ñÿ                Â     ì             Ø    ñÿ                Â     ö             á    ñÿ                í           Ş      ş     ¬      ÷           £      ı      Â     ‹'                ñÿ                    š'      ½          W)      h      Â     .             *   ñÿ                Â     /             4   ñÿ                Â      0                 ñÿ                <    ÔE                   ñÿ                J     Ì@              ]    _              s    è\              ²      `              |                     ¶           &       ‰     &      ë       —                                           ­    %.      ß       º                     Í          t       Ø                     é                     ö   00              ü                     	                                          $                     6                     =    µ      œ      J                     ]                      y    0      -       ‡     @             –                      °     `              ½    û            Ä    ã      É      Ï                     å  "                                                                                   -   ˜\             B    /            P                     _   `              k   `              x    ¿*      )      …    ]      X           	      '       —    `              £                     ¾                     Ì    è,      .      Ú    |      z       å    `              ê                     ÿ                                              `                                                        <    `      Œ                        A                      Scrt1.o __abi_tag crtstuff.c deregister_tm_clones __do_global_dtors_aux completed.0 __do_global_dtors_aux_fini_array_entry frame_dummy __frame_dummy_init_array_entry tsan_preinit.cpp helpers.c _sub_I_00099_0 main.c mtx_op.c p_routine.c philo_wait_start ph_action ph_eat table.c ft_atoi init_setup threads.c timer.c __FRAME_END__ __GNU_EH_FRAME_HDR _GLOBAL_OFFSET_TABLE_ _DYNAMIC __tsan_read8 philo_routine usleep __gmon_start__ threads_wait pthread_mutex_init mtx_setval exit@GLIBC_2.2.5 __tsan_read1 _fini gettimeofday __tsan_init __tsan_write16 __tsan_func_entry malloc print_status pthread_mutex_lock _ITM_deregisterTMCloneTable is_whitespace _IO_stdin_used _ITM_registerTMCloneTable __data_start mtx_op hb_routine pthread_mutex_destroy __cxa_finalize@GLIBC_2.2.5 __tsan_write8 __tsan_write4 __tsan_func_exit __local_tsan_preinit get_time_diff pthread_create __TMC_END__ __dso_handle table_create exit_error is_num __bss_start __stack_chk_fail@GLIBC_2.4 __tsan_read16 destroy_table mtx_getval _end pthread_mutex_unlock free __tsan_read4 _edata printf __libc_start_main@GLIBC_2.34 main pthread_join  .symtab .strtab .shstrtab .interp .note.gnu.property .note.gnu.build-id .note.ABI-tag .gnu.hash .dynsym .dynstr .gnu.version .gnu.version_r .rela.dyn .rela.plt .init .plt.got .plt.sec .text .fini .rodata .eh_frame_hdr .eh_frame .preinit_array .init_array .fini_array .dynamic .data .bss .comment .debug_aranges .debug_info .debug_abbrev .debug_line .debug_str .debug_line_str .debug_rnglists                                                                                                                         #             8      8      0                              6             h      h      $                              I             Œ      Œ                                     W   öÿÿo       °      °      $                             a             Ø      Ø      ¸                          i                         Ó                             q   ÿÿÿo       d      d      :                            ~   şÿÿo                     @                                         à      à      €                           —      B       `
-      `
-      (                          ¡                                                         œ                           €                            §                                                        °             °      °      p                            ¹                                                        ¿             00      00                                    Å              @       @      Ë                              Í             Ì@      Ì@      ü                              Û             ÈA      ÈA                                   å             ˜\      ˜L                                   ô              \       L      @                                          à\      àL                                               è\      èL                                  «             _      O      ø                                          `       P                                                `      P                                          0               P      +                             )                     ;P      p                             8                     «Q      z                             D                     %q      `                             R                     …|      
-                             ^     0               ††      S                            i     0               ÙŒ      š                            y                     s                                                                ˆ      %   %                 	                      ˜      N                                                   fœ      ‰                             
-
-=== philo.h ===
-/* ************************************************************************** */
-/*                                                                            */
-/*                                                        :::      ::::::::   */
-/*   philo.h                                            :+:      :+:    :+:   */
-/*                                                    +:+ +:+         +:+     */
-/*   By: borov <borov@student.42.fr>                +#+  +:+       +#+        */
-/*                                                +#+#+#+#+#+   +#+           */
-/*   Created: 2024/12/27 19:13:27 by borov             #+#    #+#             */
-/*   Updated: 2025/01/03 23:58:40 by borov            ###   ########.fr       */
-/*                                                                            */
-/* ************************************************************************** */
-
-#ifndef PHILO_H
-# define PHILO_H
-
-# include <stdio.h>
-# include <stdlib.h>
-# include <unistd.h>
-# include <sys/time.h>
-# include <pthread.h>
-# include <errno.h>
-# include <limits.h>
-
-#define P_NUM 0
-#define TTD 1
-#define TTE 2
-#define TTS 3
-#define MEALS 4
-#define TTT 5
-
-typedef pthread_t		t_thread;
-typedef pthread_mutex_t	t_mutex;
-typedef struct	table	t_table;
-typedef struct timeval	t_timer;
-
-typedef enum	op
-{
-	CRT,
-	DST,
-	LK,
-	ULK
-}	t_op;
-
-typedef enum	action
-{
-	EAT,
-	SLEEP,
-	THINK,
-	FORK,
-	DIE
-}	t_action;
-
-typedef struct	philo
-{
-	int			id;
-	int			meals;
-	t_thread	thread;
-	t_timer		meal_stamp;
-	t_table		*table;
-}	t_philo;
-
-typedef struct	table
-{
-	int			props[6];
-	int			t_status;
-	int			barier;
-	t_philo		*philos;
-	t_mutex		*forks;
-	t_thread	heartbeat;
-	t_mutex		table_mtx;
-	t_mutex		hb_mtx;
-	t_mutex		print_mtx;
-	t_timer		start_stamp;
-}	t_table;
-
-int		is_num(char c);
-int		is_whitespace(char c);
-void	threads_wait(t_table *table);
-void	destroy_table(t_table *table);
-void	exit_error(t_table *table, char *msg);
-void	mtx_op(t_table *table, t_mutex *mtx, t_op op);
-void	destroy_table(t_table *table);
-void	table_create(t_table *table, int argc, char **argv);
-void	mtx_setval(t_table *table, t_mutex *mtx, int *val, int n_val);
-int	mtx_getval(t_table *table, t_mutex *mtx, int *val);
-long	get_time_diff(t_timer *beg, t_timer *end);
-void	*hb_routine(void *arg);
-void	*philo_routine(void *arg);
-void	print_status(t_table *table, int idx, t_action action);
-
-#endif
-
-
-=== table.c ===
-#include "philo.h"
-
-static long	ft_atoi(t_table *table, char *str)
-{
-	long	res;
-
-	if (!str || !*str)
-		exit_error(table, "args error");
-	while (*str && is_whitespace(*str))
-		str += 1;
-	if (*str && *str == '-')
-		exit_error(table, "args error");
-	else if (*str && *str == '+')
-		str += 1;
-	res = 0;
-	while (*str && is_num(*str))
-	{
-		res = res * 10 + (*str - '0');
-		str += 1;
-	}
-	if (res > INT_MAX)
-		exit_error(table, "args error");
-	return (res);
-}
-static void	init_setup(t_table *table)
-{
-	int	c_idx;
-
-	c_idx = 0;
-	while (c_idx < table->props[P_NUM])
-	{
-		table->philos[c_idx].id = c_idx + 1;
-		table->philos[c_idx].table = table;
-		table->philos[c_idx].meals = 0;
-		mtx_op(table, &table->forks[c_idx], CRT);
-		c_idx += 1;
-	}
-}
-
-void	table_create(t_table *table, int argc, char **argv)
-{
-	int	c_arg;
-
-	table->t_status = 0;
-	if (argc < 5 || argc > 6)
-		exit_error(NULL, "args error");
-	c_arg = 1;
-	while (c_arg < argc)
-	{
-		table->props[c_arg - 1] = ft_atoi(NULL, argv[c_arg]);
-		c_arg += 1;
-	}
-	if (argc == 5)
-		table->props[MEALS] = -1;
-	table->barier = 0;
-	table->philos = malloc(table->props[P_NUM] * sizeof(t_philo));
-	table->forks = malloc(table->props[P_NUM] * sizeof(t_mutex));
-	init_setup(table);
-	mtx_op(table, &table->table_mtx, CRT);
-	mtx_op(table, &table->hb_mtx, CRT);
-	mtx_op(table, &table->print_mtx, CRT);
-	table->t_status = 1;
-}
-void	destroy_table(t_table *table)
-{
-	int	c_fork;
-
-	threads_wait(table);
-	c_fork = 0;
-	while (c_fork < table->props[P_NUM])
-	{
-		mtx_op(table, &table->forks[c_fork], DST);
-		c_fork += 1;
-	}
-	mtx_op(table, &table->hb_mtx, DST);
-	mtx_op(table, &table->print_mtx, DST);
-	mtx_op(table, &table->table_mtx, DST);
-	free(table->philos);
-	free(table->forks);
-}
-
-
-=== table.o ===
-ELF          >                     *          @     @   óúUH‰åSHƒì(H‰}ØH‰uĞH‹EH‰Çè    Hƒ}Ğ tH‹EĞH‰Çè    H‹EĞ¶ „ÀuH‹EØH    H‰ÖH‰Çè    ëHƒEĞH‹EĞH‰Çè    H‹EĞ¶ „Àt!H‹EĞH‰Çè    H‹EĞ¶ ¾À‰Çè    …ÀuÃH‹EĞH‰Çè    H‹EĞ¶ „Àt/H‹EĞH‰Çè    H‹EĞ¶ <-uH‹EØH    H‰ÖH‰Çè    ë3H‹EĞH‰Çè    H‹EĞ¶ „ÀtH‹EĞH‰Çè    H‹EĞ¶ <+uHƒEĞHÇEè    ë;H‹UèH‰ĞHÁàHĞHÀH‰ÃH‹EĞH‰Çè    H‹EĞ¶ ¾Àƒè0H˜HØH‰EèHƒEĞH‹EĞH‰Çè    H‹EĞ¶ „Àt!H‹EĞH‰Çè    H‹EĞ¶ ¾À‰Çè    …Àu¸   €H9Eè|H‹EØH    H‰ÖH‰Çè    H‹]èè    H‰ØH‹]øÉÃóúUH‰åATSHƒì H‰}ØH‹EH‰Çè    ÇEì    é  H‹EØHƒÀ H‰Çè    H‹EØH‹H ‹EìHcĞH‰ĞHÁàHĞHÁàH‹EìD`H‰ØH‰Çè    D‰#H‹EØHƒÀ H‰Çè    H‹EØH‹H ‹EìHcĞH‰ĞHÁàHĞHÁàHHC H‰Çè    H‹EØH‰C H‹EØHƒÀ H‰Çè    H‹EØH‹H ‹EìHcĞH‰ĞHÁàHĞHÁàHHCH‰Çè    ÇC    H‹EØHƒÀ(H‰Çè    H‹EØH‹H(‹EìHcĞH‰ĞHÁàHĞHÁàHÁH‹EØº    H‰ÎH‰Çè    ƒEìH‹EØH‰Çè    H‹EØ‹ 9EìŒÒşÿÿè    HƒÄ [A\]ÃóúUH‰åATSHƒì0H‰}Ø‰uÔH‰UÈH‹EH‰Çè    H‹EØHƒÀH‰Çè    H‹EØÇ@    ƒ}Ô~ƒ}Ô~H    H‰Æ¿    è    ÇEì   ëb‹EìH˜HÅ    H‹EÈHH‰ßè    H‹H‰Æ¿    èDüÿÿH‰Â‹EìXÿA‰ÔHcÃH…    H‹EØHĞH‰Çè    H‹EØHcÓD‰$ƒEì‹Eì;EÔ|–ƒ}ÔuH‹EØHƒÀH‰Çè    H‹EØÇ@ÿÿÿÿH‹EØHƒÀH‰Çè    H‹EØÇ@    H‹EØH‰Çè    H‹EØ‹ HcĞH‰ĞHÁàHĞHÁàH‰Çè    H‰ÃH‹EØHƒÀ H‰Çè    H‹EØH‰X H‹EØH‰Çè    H‹EØ‹ HcĞH‰ĞHÁàHĞHÁàH‰Çè    H‰ÃH‹EØHƒÀ(H‰Çè    H‹EØH‰X(H‹EØH‰ÇèğüÿÿH‹EØHH8H‹EØº    H‰ÎH‰Çè    H‹EØHH`H‹EØº    H‰ÎH‰Çè    H‹EØHˆˆ   H‹EØº    H‰ÎH‰Çè    H‹EØHƒÀH‰Çè    H‹EØÇ@   è    HƒÄ0[A\]ÃóúUH‰åHƒì H‰}èH‹EH‰Çè    H‹EèH‰Çè    ÇEü    ëGH‹EèHƒÀ(H‰Çè    H‹EèH‹H(‹EüHcĞH‰ĞHÁàHĞHÁàHÁH‹Eèº   H‰ÎH‰Çè    ƒEüH‹EèH‰Çè    H‹Eè‹ 9Eü|¢H‹EèHH`H‹Eèº   H‰ÎH‰Çè    H‹EèHˆˆ   H‹Eèº   H‰ÎH‰Çè    H‹EèHH8H‹Eèº   H‰ÎH‰Çè    H‹EèHƒÀ H‰Çè    H‹EèH‹@ H‰Çè    H‹EèHƒÀ(H‰Çè    H‹EèH‹@(H‰Çè    è    ÉÃóúUH‰åè    ]Ãargs error           ã                           ‹              Ö:                           int          m       ¢m   ‘               Ç       t        €            3ö       5#ö        6#ö    Î       7Î       (}      f        A       f       A        f       "	_       #	_       $û        :   (C	´  	    E  	    F´  	    Gm    ‘   Ä  :   '     H‰  Œ       }       Ä      !ù      À>‰      @)       Af       Bf       C9       D>  (    EÕ  0    Fá  8    Gá  `    Há  ˆ    I‰  °     "Ÿ   op A   $¾  CRT  DST LK ULK      *•      (5  id 7f        8f       9Õ      :‰      ;    í      <Ê  f   9  :      á      	¯V  H    
-    Nf         	 H   }  .    
-    Q—    >  ¾       Lf   «  ‘        Mf   ¿  ‘    
-    PÔ    Œ        @        .      œ      @  ‘X    Bf   ‘l     (        )      œa      (  ‘H    ('f   ‘D    (4Ğ  ‘¸    *f   ‘\             h      œ›      !  ‘H    f   ‘\     m           ½      œ      ‘Hstr +Œ   ‘@res m   ‘X   :;9I8   :;9I  $ >   I   !I   :!;9I  :;9  (   	 :!;9I  
-.?:!;9!'<  4 :!;9!I  I  ! I/  .?:!;9!'I<  .?:!;9!'@|  %     $ >  :;9  >I:;9   :;9I8  .?:;9'<  .?:;9'I<  .:;9'@|  .:;9'I@|   :;9I  4 :;9I   ,                     ‹                          b   û                          
-                                            	        J½ t .KY/	W. J . L. J .Ku
-. J .KYƒ0<XXu	U. J . O­	Y»h.½uÊò#t/ò¬uò¬gò<	gz‚ÖŞ¡?/ fg=u/0J  f	(G‡×Ÿ%g ò$= òó»­­'u ò½	»u ò<
-gÖ]­×$òóòÉ< t_table __data tv_sec short int size_t malloc meal_stamp __pthread_internal_list ft_atoi heartbeat print_mtx pthread_mutex_t __count __spins __align destroy_table is_whitespace __prev table free start_stamp __next __size t_op __kind long long int threads_wait t_timer long int props t_status philo c_idx forks mtx_op hb_mtx unsigned char barier table_create meals argc signed char long long unsigned int unsigned int argv thread short unsigned int char __nusers t_philo t_mutex GNU C17 13.3.0 -mtune=generic -march=x86-64 -g -fsanitize=thread -fasynchronous-unwind-tables -fstack-protector-strong -fstack-clash-protection -fcf-protection __lock __pthread_mutex_s long unsigned int __time_t __elision timeval __pthread_list_t tv_usec philos exit_error init_setup __owner c_fork t_thread table_mtx __suseconds_t pthread_t __list is_num c_arg /home/borov/projects/42_folder/circle_3/philosophers/philo table.c /home/borov/projects/42_folder/circle_3/philosophers/philo /usr/lib/gcc/x86_64-linux-gnu/13/include /usr/include/x86_64-linux-gnu/bits /usr/include/x86_64-linux-gnu/bits/types /usr/include table.c table.c stddef.h types.h struct_timeval.h thread-shared-types.h struct_mutex.h pthreadtypes.h philo.h stdlib.h  GCC: (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0                GNU   À                 zR x             ½   E†CEƒ¯      @       h   E†CGŒƒX    d       )   E†CGŒƒ   ˆ       .   E†C%     ¨           E†CF                                   ñÿ                                                            	             ½           ½      h           |                                        
-                                                                                   +                      =                      J                      U                      c                      j                      {                      ˆ                      –                      ¤                      «                      ¸     %      )      Å                      Ì     N      .      Ú                      ç                      ì                       table.c ft_atoi init_setup _sub_I_00099_0 __tsan_func_entry __tsan_read1 exit_error is_whitespace is_num __tsan_func_exit __tsan_read8 __tsan_write4 __tsan_write8 mtx_op __tsan_read4 table_create malloc destroy_table threads_wait free __tsan_init              üÿÿÿÿÿÿÿ0             üÿÿÿÿÿÿÿF             üÿÿÿÿÿÿÿQ             üÿÿÿÿÿÿÿd             üÿÿÿÿÿÿÿ{             üÿÿÿÿÿÿÿŒ             üÿÿÿÿÿÿÿœ             üÿÿÿÿÿÿÿ³             üÿÿÿÿÿÿÿÉ             üÿÿÿÿÿÿÿÔ             üÿÿÿÿÿÿÿâ             üÿÿÿÿÿÿÿù             üÿÿÿÿÿÿÿ3            üÿÿÿÿÿÿÿZ            üÿÿÿÿÿÿÿq            üÿÿÿÿÿÿÿ‚            üÿÿÿÿÿÿÿœ            üÿÿÿÿÿÿÿ§            üÿÿÿÿÿÿÿ°            üÿÿÿÿÿÿÿØ            üÿÿÿÿÿÿÿô            üÿÿÿÿÿÿÿ&            üÿÿÿÿÿÿÿ9            üÿÿÿÿÿÿÿe            üÿÿÿÿÿÿÿ}            üÿÿÿÿÿÿÿ©            üÿÿÿÿÿÿÿÀ            üÿÿÿÿÿÿÿó            üÿÿÿÿÿÿÿ            üÿÿÿÿÿÿÿ            üÿÿÿÿÿÿÿG            üÿÿÿÿÿÿÿW            üÿÿÿÿÿÿÿu            üÿÿÿÿÿÿÿ‚            üÿÿÿÿÿÿÿ¨            üÿÿÿÿÿÿÿŞ            üÿÿÿÿÿÿÿ            üÿÿÿÿÿÿÿ&            üÿÿÿÿÿÿÿ=            üÿÿÿÿÿÿÿ\            üÿÿÿÿÿÿÿo            üÿÿÿÿÿÿÿƒ            üÿÿÿÿÿÿÿ¢            üÿÿÿÿÿÿÿµ            üÿÿÿÿÿÿÿå            üÿÿÿÿÿÿÿ            üÿÿÿÿÿÿÿ             üÿÿÿÿÿÿÿ0            üÿÿÿÿÿÿÿ@            üÿÿÿÿÿÿÿf            üÿÿÿÿÿÿÿr            üÿÿÿÿÿÿÿ‹            üÿÿÿÿÿÿÿ¾            üÿÿÿÿÿÿÿÎ            üÿÿÿÿÿÿÿõ            üÿÿÿÿÿÿÿ            üÿÿÿÿÿÿÿ0            üÿÿÿÿÿÿÿ@            üÿÿÿÿÿÿÿP            üÿÿÿÿÿÿÿ`            üÿÿÿÿÿÿÿp            üÿÿÿÿÿÿÿu            üÿÿÿÿÿÿÿ…            üÿÿÿÿÿÿÿ              |             
-                     
-   
-   Ş             
-      ;              
-                                   *       
-   	           /       
-   
-           =       
-   
-   —      D       
-   
-   ”      M       
-   
-   D      T       
-   
-   ­      [       
-   
-   q      b       
-   
-          p       
-   
-         u       
-   
-   ©             
-   
-         ”       
-   
-   À      ›       
-   
-   é               
-   
-   ¼      ­       
-   
-          º       
-   
-   Õ      Ê       
-   
-   }      Ï       
-   
-   9       Ü       
-   
-   ±       é       
-   
-   Ï       ü       
-   
-   Ä            
-   
-   …            
-   
-   ~      "      
-   
-   }       /      
-   
-   ú      <      
-   
-   Å      I      
-   
-   â       V      
-   
-   …       c      
-   
-   ²      p      
-   
-   4      ~      
-   
-   *      “      
-   
-                
-   
-   Ö       ©      
-   
-          Å      
-   
-   m       Ö      
-   
-   	      â      
-   
-   Ö      î      
-   
-           ú      
-   
-   ¸             
-   
-               
-   
-         !      
-   
-   R      .      
-   
-   İ      ;      
-   
-   0      H      
-   
-   Y       U      
-   
-         b      
-   
-   =      o      
-   
-   c       |      
-   
-   Ã       Š      
-   
-         ¿      
-   
-   İ       Ë      
-   
-   $      ä      
-   
-   f      ñ      
-   
-   ¦      ş      
-   
-   .             
-   
-   ¸             
-   
-   Î      D      
-   
-   ¾       W      
-   
-   ÷       g      
-   
-   '       ~      
-   
-   6      ˜      
-   
-   ;      ¬      
-   
-   £       À      
-   
-   ä      Õ      
-   
-   •       Ú            N      ñ      
-   
-   ¸       ÿ      
-   
-               
-   
-   Y                  %      )      
-   
-   ¸       7      
-   
-   l      E      
-   
-   ¡      T      
-   
-   B      b      
-   
-   ï      i            ½      €      
-   
-   ¸             
-   
-   *      œ      
-   
-   Q       §                    º      
-   
-   ¸              
-                                   "       
-      C       &       
-      ~       *       
-      §       .       
-      Ê       2       
-      ó       <       
-             A       
-            F       
-            K       
-            P       
-      !      U       
-      2      Z       
-      H      _       
-      W      d       
-      f      i       
-      n      s                                           D             ½      h             %      Œ             N      ¬             |       .symtab .strtab .shstrtab .rela.text .data .bss .rodata .rela.init_array.00099 .rela.debug_info .debug_abbrev .rela.debug_aranges .rela.debug_line .debug_str .debug_line_str .comment .note.GNU-stack .note.gnu.property .rela.eh_frame                                                                                             @       ‹                                   @               `                                 &                     Ë                                     ,                     Ë                                     1                     Ë                                    >                     Ø                                   9      @               `                                 U                      à      ç                             P      @               x                                a                      Ç      Å                             t                      Œ      0                              o      @               ˆ'      0                           ˆ                      ¼                                   ƒ      @               ¸'      €                          ”      0               ×      H                            Ÿ      0                     w                            ¯      0               –      ,                             ¸                      Â                                     È                     È                                     à                     è      È                              Û      @               8)      x                                                 °      ¸                          	                      h      ø                                                    °)      ê                              
-
-=== threads.c ===
-#include "philo.h"
-
-void	threads_wait(t_table *table)
-{
-	int	c_thread;
-
-	c_thread = 0;
-	if (table->t_status > 1)
-	{
-		while (c_thread < table->props[P_NUM])
-		{
-			pthread_join(table->philos[c_thread].thread, NULL);
-			c_thread += 1;
-		}
-		pthread_join(table->heartbeat, NULL);
-	}
-}
-
-
-=== threads.o ===
-ELF          >                    è          @     @   óúUH‰åSHƒì(H‰}ØH‹EH‰Çè    ÇEì    H‹EØHƒÀH‰Çè    H‹EØ‹@ƒø   ëQH‹EØHƒÀ H‰Çè    H‹EØH‹H ‹EìHcĞH‰ĞHÁàHĞHÁàHHCH‰Çè    H‹C¾    H‰Çè    ƒEìH‹EØH‰Çè    H‹EØ‹ 9Eì|˜H‹EØHƒÀ0H‰Çè    H‹EØH‹@0¾    H‰Çè    è    H‹]øÉÃóúUH‰åè    ]Ã          N       
-                    î                                   int          a       ¢a               ¶       h        t            3å       5#å        6#å    ½       7½       (l      Z        5       Z       5        Z       "	S       #	S       $ê        .   (C	£      Eö       F£      Ga    €   ³  .   '     Hx      l       ³      !ã      À>s      @Ş       AZ       BZ       Cî       Dó  (    E¿  0    FË  8    GË  `    HË  ˆ    Is  °     "       (5Í  id 7Z        8Z       9¿      :s      ;Í    ×      <  Z   î  .    Ò  Ë      ÛZ     	l  	   <               ß       œ    Í  ‘H    Z   ‘\   :;9I8  $ >   :;9I  :;9   !I   :!;9I  I  ! I/  	 I  
-%     $ >  :;9   :;9I8  .?:;9'I<  .?:;9'@|   :;9I  4 :;9I   ,                     î                            Y   û                      	                                        	        ½åä	’ ò¬ƒ!ÖÍ"t print_mtx t_table t_philo philos t_status __data t_thread short int threads_wait forks __suseconds_t __owner __kind pthread_mutex_t __lock pthread_join pthread_t t_mutex unsigned char __size __pthread_mutex_s c_thread meal_stamp short unsigned int thread table __time_t meals __nusers long unsigned int GNU C17 13.3.0 -mtune=generic -march=x86-64 -g -fsanitize=thread -fasynchronous-unwind-tables -fstack-protector-strong -fstack-clash-protection -fcf-protection __pthread_internal_list __elision barier philo timeval unsigned int long long unsigned int __spins tv_usec start_stamp tv_sec long long int char __align __count heartbeat __prev __pthread_list_t table_mtx long int __list props __next signed char hb_mtx t_timer /home/borov/projects/42_folder/circle_3/philosophers/philo threads.c /home/borov/projects/42_folder/circle_3/philosophers/philo /usr/include/x86_64-linux-gnu/bits /usr/include/x86_64-linux-gnu/bits/types /usr/include threads.c threads.c types.h struct_timeval.h thread-shared-types.h struct_mutex.h pthreadtypes.h philo.h pthread.h  GCC: (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0            GNU   À                 zR x             ß    E†CEƒÑ       @           E†CF                                   ñÿ                                           ß                                         	                                                                                                ß       '                      9                      F                      S                      `                      q                       threads.c _sub_I_00099_0 threads_wait __tsan_func_entry __tsan_read4 __tsan_read8 pthread_join __tsan_func_exit __tsan_init              
-   üÿÿÿÿÿÿÿ0             üÿÿÿÿÿÿÿR             üÿÿÿÿÿÿÿ~             üÿÿÿÿÿÿÿ             üÿÿÿÿÿÿÿŸ             üÿÿÿÿÿÿÿº             üÿÿÿÿÿÿÿÏ             üÿÿÿÿÿÿÿÔ             üÿÿÿÿÿÿÿè             üÿÿÿÿÿÿÿ              ß              
-                     
-      /             
-      ;              
-                                   *       
-              1       
-            8       
-            A       
-      ª       H       
-      å       O       
-      ¹      V       
-      :       d       
-      œ      i       
-            u       
-      W       ƒ       
-      [      Š       
-      M             
-      ş      œ       
-      F      ©       
-      2      ¹       
-            ¾       
-      Ï      Ë       
-      z      Ø       
-      ²      ë       
-            ÷       
-      ¿             
-      „             
-      h            
-      e       +      
-            8      
-      m       E      
-      *      R      
-      ç      _      
-      ¥      m      
-      ˜       ‚      
-      *             
-      ¸       ˜      
-      `      ´      
-      t       À      
-      1       Ì      
-      ¢       Ø      
-      
-       ä      
-      ÿ       ñ      
-      ¬      ş      
-      !             
-      ñ            
-             %      
-      Q       2      
-      p      ?      
-      ’      L      
-      Å      Y      
-              f      
-      :      t      
-      Ì      €      
-      ø      ™      
-            ¦      
-      ø       ³      
-      Ú       À      
-      ÿ       Ó      
-             ù      
-      ‹             
-      D                            3      
-      ÿ       B      
-      Ñ              
-                                   "       
-      E       &       
-      €       *       
-      £       .       
-      Ì       8       
-      Ù       =       
-      ã       B       
-      í       G       
-      õ       L       
-            Q       
-            V       
-      +      [       
-      :      `       
-      B      j                                           D             ß        .symtab .strtab .shstrtab .rela.text .data .bss .rela.init_array.00099 .rela.debug_info .debug_abbrev .rela.debug_aranges .rela.debug_line .debug_str .debug_line_str .comment .note.GNU-stack .note.gnu.property .rela.eh_frame                                                                                             @       î                                    @               0      ğ                           &                     .                                     ,                     .                                     6                     0                                   1      @                                                 M                      8      R                             H      @               8                                Y                      Š                                   l                      ‘      0                              g      @               P      0          
-                 €                      Á      ¡                              {      @               €      P                          Œ      0               b      Ô                            —      0               6	      L                            §      0               ‚
-      ,                             °                      ®
-                                     À                     °
-                                     Ø                     Ğ
-      `                              Ó      @               Ğ      0                                                 0      €         	                 	                      °      }                                                           â                              
-
-=== timer.c ===
-#include "philo.h"
-
-long	get_time_diff(t_timer *beg, t_timer *end)
-{
-	t_timer	tmp;
-	long	s_diff;
-	long	us_diff;
-
-	if (!end)
-	{
-		gettimeofday(&tmp, NULL);
-		end = &tmp;
-	}
-	s_diff = end->tv_sec - beg->tv_sec;
-	us_diff = end->tv_usec - beg->tv_usec;
-	return (s_diff * 1000 + us_diff / 1000);
-}
-
-
-=== timer.o ===
-ELF          >                               @     @   óúUH‰åSHƒìHH‰}¸H‰u°dH‹%(   H‰Eè1ÀH‹EH‰Çè    Hƒ}° uHEĞ¾    H‰Çè    HEĞH‰E°H‹E°H‰Çè    H‹E°H‹H‹E¸H‰Çè    H‹E¸H‹ H)ÃH‰ÚH‰UÀH‹E°HƒÀH‰Çè    H‹E°H‹XH‹E¸HƒÀH‰Çè    H‹E¸H‹@H)ÃH‰ÚH‰UÈH‹EÀHiğè  H‹MÈHºÏ÷Sã¥›Ä H‰ÈH÷êHÁúH‰ÈHÁø?H)ÂHè    H‰ØH‹UèdH+%(   tè    H‹]øÉÃóúUH‰åè    ]Ã            ]       	                                      
-<                   int          f       ¢f               ¹       m        y            "“       C_   ç   ì   >    “   ç       f                 œ[  beg [  ‘¨end +[  ‘ tmp 
-À   ‘@    f   ‘°    f   ‘¸ À    $ >   :;9I  7 I   :!;9I8   I   !I   :!;!9I  4 :!;9!I  	%  
-   $ >  :;9  .?:;9'I<  .?:;9'I@|  4 :;9I   ,                                           —     J   û                                                  	        J£v¼.	ä!t
-òŸ"¬"» long long int unsigned int timeval long unsigned int long long unsigned int us_diff unsigned char char s_diff get_time_diff gettimeofday t_timer tv_usec __time_t tv_sec short unsigned int signed char long int short int __suseconds_t GNU C17 13.3.0 -mtune=generic -march=x86-64 -g -fsanitize=thread -fasynchronous-unwind-tables -fstack-protector-strong -fstack-clash-protection -fcf-protection /home/borov/projects/42_folder/circle_3/philosophers/philo timer.c /home/borov/projects/42_folder/circle_3/philosophers/philo /usr/include/x86_64-linux-gnu/bits /usr/include/x86_64-linux-gnu/bits/types /usr/include/x86_64-linux-gnu/sys timer.c timer.c types.h struct_timeval.h philo.h time.h  GCC: (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0               GNU   À                 zR x                E†CEƒÿ       @           E†CF                                   ñÿ                                      	                                             	                                                                                                      &                      8                      E                      R                      c                      t                       timer.c _sub_I_00099_0 get_time_diff __tsan_func_entry gettimeofday __tsan_read8 __tsan_func_exit __stack_chk_fail __tsan_init ,          
-   üÿÿÿÿÿÿÿD             üÿÿÿÿÿÿÿX             üÿÿÿÿÿÿÿk             üÿÿÿÿÿÿÿŒ             üÿÿÿÿÿÿÿ¤             üÿÿÿÿÿÿÿì             üÿÿÿÿÿÿÿ            üÿÿÿÿÿÿÿ            üÿÿÿÿÿÿÿ                           
-                     
-      é              
-      ;              
-                                   *       
-              1       
-      #       8       
-             F       
-      T       M       
-      ©       T       
-      ¼       [       
-      Ñ       i       
-      È       n       
-      ™       z       
-      Û       ˆ       
-      b              
-              ”       
-             ¡       
-      ¢       ­       
-      ‘       ¼       
-      5       Á       
-      ‰       Í       
-      |       ò       
-      n       ı                     ?      
-      g       M      
-      L              
-                                   "       
-      C       &       
-      ~       *       
-      ¡       .       
-      Ê       8       
-      ì       =       
-      ô       B       
-      ü       G       
-            L       
-            Q       
-            [                                           D                    .symtab .strtab .shstrtab .rela.text .data .bss .rela.init_array.00099 .rela.debug_info .debug_abbrev .rela.debug_aranges .rela.debug_line .debug_str .debug_line_str .comment .note.GNU-stack .note.gnu.property .rela.eh_frame                                                                                             @                                          @               Ø	      Ø                           &                     \                                     ,                     \                                     6                     `                                   1      @               °
-                                 M                      h      a                             H      @               È
-      ˆ                          Y                      É      æ                              l                      ¯      0                              g      @               P      0          
-                 €                      ß      ›                              {      @               €                                Œ      0               z      ‰                            —      0                     $                            §      0               '      ,                             °                      S                                     À                     X                                     Ø                     x      `                              Ó      @               ˆ      0                                                 Ø      €         	                 	                      X	      €                                                    ¸      â                              
-
-=== helpers.c ===
-#include "philo.h"
-
-int	is_num(char c)
-{
-	return (c >= '0' && c <= '9');
-}
-
-int	is_whitespace(char c)
-{
-	return (c == ' ' || (c >= 9 && c <= 13));
-}
-
-void	exit_error(t_table *table, char *msg)
-{
-	printf("error: %s\n", msg);
-	if (table)
-		destroy_table(table);
-	exit(EXIT_FAILURE);
-}
-
-void	print_status(t_table *table, int idx, t_action action)
-{
-	mtx_op(table, &table->print_mtx, LK);
-	if (action == FORK)
-		printf("%ld %d has taken a fork\n", get_time_diff(&table->start_stamp, NULL), idx);
-	else if (action == EAT)
-		printf("%ld %d is eating\n", get_time_diff(&table->start_stamp, NULL), idx);
-	else if (action == SLEEP)
-		printf("%ld %d is sleeping\n", get_time_diff(&table->start_stamp, NULL), idx);
-	else if (action == THINK)
-		printf("%ld %d is thinking\n", get_time_diff(&table->start_stamp, NULL), idx);
-	else
-		printf("%ld %d died\n", get_time_diff(&table->start_stamp, NULL), idx);
-	mtx_op(table, &table->print_mtx, ULK);
-}
-
-// long	get_ms(t_timer *time)
-// {
-// 	return (time->tv_sec * 1000 + time->tv_usec / 1000);
-// }
-
-// void	ft_usleep(int ms)
-// {
-// 	long	beg;
-// 	t_timer	tmp;
-
-// 	gettimeofday(&tmp, NULL);
-// 	beg = get_ms(&tmp);
-
-// }
-
-
-=== main.c ===
-#include "philo.h"
-
-int	main(int argc, char **argv)
-{
-	t_table	table;
-
-	table_create(&table, argc, argv);
-	for (int i = 0; i < table.props[P_NUM]; i++)
-		pthread_create(&table.philos[i].thread, NULL, philo_routine, &table.philos[i]);
-	pthread_create(&table.heartbeat, NULL, hb_routine, &table);
-	table.t_status = 2;
-	destroy_table(&table);
-}
-
-
-=== mtx_op.c ===
-#include "philo.h"
-
-void	mtx_op(t_table *table, t_mutex *mtx, t_op op)
-{
-	if (!table || !mtx)
-		exit_error(table, "mtx_op error");
-	if (op == CRT && pthread_mutex_init(mtx, NULL) != 0)
-		exit_error(table, "mtx_init error");
-	else if (op == DST && pthread_mutex_destroy(mtx) != 0)
-		exit_error(table, "mtx_destroy error\n");
-	else if (op == LK && pthread_mutex_lock(mtx) != 0)
-		exit_error(table, "mtx_lock error\n");
-	else if (op == ULK && pthread_mutex_unlock(mtx) != 0)
-		exit_error(table, "mtx_unlock error\n");
-}
-
-void	mtx_setval(t_table *table, t_mutex *mtx, int *val, int n_val)
-{
-	mtx_op(table, mtx, LK);
-	*val = n_val;
-	mtx_op(table, mtx, ULK);
-}
-int	mtx_getval(t_table *table, t_mutex *mtx, int *val)
-{
-	int	res;
-
-	mtx_op(table, mtx, LK);
-	res = *val;
-	mtx_op(table, mtx, ULK);
-	return (res);
-}
-
-
-=== p_routine.c ===
-#include "philo.h"
-
-static void	philo_wait_start(t_table *table, t_philo *philo)
-{
-	mtx_op(table, &table->table_mtx, LK);
-	table->barier += 1;
-	if (table->barier >= table->props[P_NUM])
-		gettimeofday(&table->start_stamp, NULL);
-	mtx_op(table, &table->table_mtx, ULK);
-	while (1)
-	{
-		mtx_op(table, &table->table_mtx, LK);
-		if (table->barier >= table->props[P_NUM])
-		{
-			mtx_op(table, &table->hb_mtx, LK);
-			philo->meal_stamp = table->start_stamp;
-			mtx_op(table, &table->hb_mtx, ULK);
-			mtx_op(table, &table->table_mtx, ULK);
-			break;
-		}
-		mtx_op(table, &table->table_mtx, ULK);
-	}
-}
-
-void	*hb_routine(void *arg)
-{
-	t_table	*table;
-	int		c_philo;
-
-	table = (t_table *)arg;
-	while (1)
-	{
-		mtx_op(table, &table->table_mtx, LK);
-		if (table->barier >= table->props[P_NUM])
-		{
-			mtx_op(table, &table->table_mtx, ULK);
-			break;
-		}
-		mtx_op(table, &table->table_mtx, ULK);
-	}
-	while (1)
-	{
-		int	dead;
-		int	fed;
-		fed = 0;
-		c_philo = 0;
-		while (c_philo < table->props[P_NUM])
-		{
-			mtx_op(table, &table->hb_mtx, LK);
-			dead = (get_time_diff(&table->philos[c_philo].meal_stamp, NULL) >= table->props[TTD]);
-			fed += (table->props[MEALS] != -1 && table->philos[c_philo].meals >= table->props[MEALS]);
-			mtx_op(table, &table->hb_mtx, ULK);
-			if (dead)
-			{
-				mtx_setval(table, &table->table_mtx, &table->barier, 0);
-				print_status(table, c_philo + 1, DIE);
-				return (NULL);
-			}
-			c_philo += 1;
-		}
-		if (fed >= table->props[P_NUM])
-		{
-			mtx_setval(table, &table->table_mtx, &table->barier, 0);
-			return (NULL);
-		}
-		if (mtx_getval(table, &table->table_mtx, &table->barier) == 0)
-			break ;
-	}
-	return (NULL);
-}
-
-static int	ph_action(t_table *table, t_action a_type)
-{
-	int	time;
-	int	s_time;
-	int	delta;
-
-	if (a_type == EAT)
-		time = table->props[TTE];
-	else if (a_type == SLEEP)
-		time = table->props[TTS];
-	else if (a_type == THINK)
-		time = table->props[TTT];
-	else
-		time = 0;
-	s_time = 0;
-	delta = 10;
-	while (s_time < time)
-	{
-		if (mtx_getval(table, &table->table_mtx, &table->barier) == 0)
-			return (1);
-		usleep(delta * 1000);
-		s_time += delta;
-	}
-	return (0);
-}
-
-static int	ph_eat(t_table *table, t_philo *philo)
-{
-	int	act_res;
-
-	if (philo->id % 2 == 0)
-	{
-		mtx_op(table, &table->forks[philo->id % table->props[P_NUM]], LK);
-		if (mtx_getval(table, &table->table_mtx, &table->barier) == 0)
-		{
-			mtx_op(table, &table->forks[philo->id % table->props[P_NUM]], ULK);
-			return (1);
-		}
-		print_status(table, philo->id, FORK);
-		mtx_op(table, &table->forks[philo->id - 1], LK);
-		if (mtx_getval(table, &table->table_mtx, &table->barier) == 0)
-		{
-			mtx_op(table, &table->forks[philo->id % table->props[P_NUM]], ULK);
-			mtx_op(table, &table->forks[philo->id - 1], ULK);
-			return (1);
-		}
-		print_status(table, philo->id, FORK);
-	}
-	else
-	{
-		mtx_op(table, &table->forks[philo->id - 1], LK);
-		if (mtx_getval(table, &table->table_mtx, &table->barier) == 0)
-		{
-			mtx_op(table, &table->forks[philo->id - 1], ULK);
-			return (1);
-		}
-		print_status(table, philo->id, FORK);
-		mtx_op(table, &table->forks[philo->id % table->props[P_NUM]], LK);
-		if (mtx_getval(table, &table->table_mtx, &table->barier) == 0)
-		{
-			mtx_op(table, &table->forks[philo->id - 1], ULK);
-			mtx_op(table, &table->forks[philo->id % table->props[P_NUM]], ULK);
-			return (1);
-		}
-		print_status(table, philo->id, FORK);
-	}
-	mtx_op(table, &table->hb_mtx, LK);
-	gettimeofday(&philo->meal_stamp, NULL);
-	philo->meals += 1;
-	mtx_op(table, &table->hb_mtx, ULK);
-	print_status(table, philo->id, EAT);
-	act_res = ph_action(table, EAT);
-	mtx_op(table, &table->forks[philo->id - 1], ULK);
-	mtx_op(table, &table->forks[philo->id % table->props[P_NUM]], ULK);
-	return (act_res);
-}
-
-void	*philo_routine(void *arg)
-{
-	t_philo	*philo;
-	t_table	*table;
-
-	philo = (t_philo *)arg;
-	table = philo->table;
-	philo_wait_start(table, philo);
-	while (1)
-	{
-		if (ph_eat(table, philo) != 0)
-			return (NULL);
-		print_status(table, philo->id, SLEEP);
-		if (ph_action(table, SLEEP) != 0)
-			return (NULL);
-		print_status(table, philo->id, THINK);
-	}
-	return (NULL);
-}
-
-
-=== table.c ===
-#include "philo.h"
-
-static long	ft_atoi(t_table *table, char *str)
-{
-	long	res;
-
-	if (!str || !*str)
-		exit_error(table, "args error");
-	while (*str && is_whitespace(*str))
-		str += 1;
-	if (*str && *str == '-')
-		exit_error(table, "args error");
-	else if (*str && *str == '+')
-		str += 1;
-	res = 0;
-	while (*str && is_num(*str))
-	{
-		res = res * 10 + (*str - '0');
-		str += 1;
-	}
-	if (res > INT_MAX)
-		exit_error(table, "args error");
-	return (res);
-}
-static void	init_setup(t_table *table)
-{
-	int	c_idx;
-
-	c_idx = 0;
-	while (c_idx < table->props[P_NUM])
-	{
-		table->philos[c_idx].id = c_idx + 1;
-		table->philos[c_idx].table = table;
-		table->philos[c_idx].meals = 0;
-		mtx_op(table, &table->forks[c_idx], CRT);
-		c_idx += 1;
-	}
-}
-
-void	table_create(t_table *table, int argc, char **argv)
-{
-	int	c_arg;
-
-	table->t_status = 0;
-	if (argc < 5 || argc > 6)
-		exit_error(NULL, "args error");
-	c_arg = 1;
-	while (c_arg < argc)
-	{
-		table->props[c_arg - 1] = ft_atoi(NULL, argv[c_arg]);
-		c_arg += 1;
-	}
-	if (argc == 5)
-		table->props[MEALS] = -1;
-	table->barier = 0;
-	table->philos = malloc(table->props[P_NUM] * sizeof(t_philo));
-	table->forks = malloc(table->props[P_NUM] * sizeof(t_mutex));
-	init_setup(table);
-	mtx_op(table, &table->table_mtx, CRT);
-	mtx_op(table, &table->hb_mtx, CRT);
-	mtx_op(table, &table->print_mtx, CRT);
-	table->t_status = 1;
-}
-void	destroy_table(t_table *table)
-{
-	int	c_fork;
-
-	threads_wait(table);
-	c_fork = 0;
-	while (c_fork < table->props[P_NUM])
-	{
-		mtx_op(table, &table->forks[c_fork], DST);
-		c_fork += 1;
-	}
-	mtx_op(table, &table->hb_mtx, DST);
-	mtx_op(table, &table->print_mtx, DST);
-	mtx_op(table, &table->table_mtx, DST);
-	free(table->philos);
-	free(table->forks);
-}
-
-
-=== threads.c ===
-#include "philo.h"
-
-void	threads_wait(t_table *table)
-{
-	int	c_thread;
-
-	c_thread = 0;
-	if (table->t_status > 1)
-	{
-		while (c_thread < table->props[P_NUM])
-		{
-			pthread_join(table->philos[c_thread].thread, NULL);
-			c_thread += 1;
-		}
-		pthread_join(table->heartbeat, NULL);
-	}
-}
-
-
-=== timer.c ===
-#include "philo.h"
-
-long	get_time_diff(t_timer *beg, t_timer *end)
-{
-	t_timer	tmp;
-	long	s_diff;
-	long	us_diff;
-
-	if (!end)
-	{
-		gettimeofday(&tmp, NULL);
-		end = &tmp;
-	}
-	s_diff = end->tv_sec - beg->tv_sec;
-	us_diff = end->tv_usec - beg->tv_usec;
-	return (s_diff * 1000 + us_diff / 1000);
-}
-
-

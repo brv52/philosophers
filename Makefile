@@ -1,6 +1,6 @@
 CC = cc
 FLAGS = -Wall -Wextra -Werror
-SAN = -fsanitize=thread -g
+# SAN = -fsanitize=thread -g
 
 TARGET = philo
 SRCS = $(shell ls *.c | tr '\n' ' ')

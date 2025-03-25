@@ -1,29 +1,21 @@
 #include "philo.h"
 
-long	get_time_diff(t_timer *beg, t_timer *end)
+long gettime_ms()
 {
-	t_timer	tmp;
-	long	s_diff;
-	long	us_diff;
+	t_timer	time;
 
-	if (!end)
-	{
-		gettimeofday(&tmp, NULL);
-		end = &tmp;
-	}
-	s_diff = end->tv_sec - beg->tv_sec;
-	us_diff = end->tv_usec - beg->tv_usec;
-	return (s_diff * 1000 + us_diff / 1000);
+	gettimeofday(&time, NULL);
+	return (time.tv_sec * 1000 + time.tv_usec / 1000);
 }
 
-int	precise_sleep(t_table *table, long ms)
+int	msleep(t_table *table, long ms)
 {
-	t_timer	t;
+	long	sleep_time;
 
-	gettimeofday(&t, NULL);
-	while (get_time_diff(&t, NULL) < ms)
+	sleep_time = gettime_ms() + ms;
+	while (gettime_ms() < sleep_time)
 	{
-		if (mtx_getval(table, &table->table_mtx, &table->barier) == 0)
+		if (is_stopped(table))
 			return (1);
 		usleep(50);
 	}

@@ -1,73 +1,5 @@
 #include "philo.h"
 
-static void	philo_wait_start(t_table *table, t_philo *philo)
-{
-	mtx_op(table, &table->table_mtx, LK);
-	table->barier += 1;
-	mtx_op(table, &table->table_mtx, ULK);
-
-	while (1)
-	{
-		mtx_op(table, &table->table_mtx, LK);
-		if (table->barier >= table->props[P_NUM])
-		{
-			mtx_op(table, &table->hb_mtx, LK);
-			philo->meal_stamp = table->start_stamp;
-			mtx_op(table, &table->hb_mtx, ULK);
-			mtx_op(table, &table->table_mtx, ULK);
-			break;
-		}
-		mtx_op(table, &table->table_mtx, ULK);
-	}
-}
-
-void	*hb_routine(void *arg)
-{
-	t_table	*table;
-	int		c_philo;
-
-	table = (t_table *)arg;
-	while (1)
-	{
-		mtx_op(table, &table->table_mtx, LK);
-		if (table->barier >= table->props[P_NUM])
-		{
-			mtx_op(table, &table->table_mtx, ULK);
-			break;
-		}
-		mtx_op(table, &table->table_mtx, ULK);
-	}
-	while (1)
-	{
-		int	dead;
-		int	fed;
-		fed = 0;
-		c_philo = 0;
-		while (c_philo < table->props[P_NUM])
-		{
-			mtx_op(table, &table->hb_mtx, LK);
-			dead = (get_time_diff(&table->philos[c_philo].meal_stamp, NULL) >= table->props[TTD]);
-			fed += (table->props[MEALS] != -1 && table->philos[c_philo].meals >= table->props[MEALS]);
-			mtx_op(table, &table->hb_mtx, ULK);
-			if (dead)
-			{
-				mtx_setval(table, &table->table_mtx, &table->barier, 0);
-				print_status(table, c_philo + 1, DIE);
-				return (NULL);
-			}
-			c_philo += 1;
-		}
-		if (fed >= table->props[P_NUM])
-		{
-			mtx_setval(table, &table->table_mtx, &table->barier, 0);
-			return (NULL);
-		}
-		if (mtx_getval(table, &table->table_mtx, &table->barier) == 0)
-			break ;
-	}
-	return (NULL);
-}
-
 static int	ph_action(t_table *table, t_action a_type)
 {
 	long	time;
@@ -76,67 +8,57 @@ static int	ph_action(t_table *table, t_action a_type)
 		time = table->props[TTE];
 	else if (a_type == SLEEP)
 		time = table->props[TTS];
-	else if (a_type == THINK)
-		time = table->props[TTT];
+	else if (a_type == THINK && table->props[P_NUM] % 2 != 0)
+	{
+		time = (table->props[TTE] * 2 - table->props[TTS]) / 2;
+		if (time < 0)
+			time = 0;
+	}
 	else
 		time = 0;
-	return (precise_sleep(table, time));
+	return (msleep(table, time));
 }
 
-static int	ph_eat(t_table *table, t_philo *philo)
+static int	eat(t_table *table, t_philo *philo)
 {
-	int	act_res;
+	int res;
 
-	if (philo->id % 2 == 0)
+	mtx_op(table, &table->forks[philo->id - 1], LK);
+	print_status(table, philo->id, FORK);
+	if (table->props[P_NUM] == 1)
 	{
-		mtx_op(table, &table->forks[philo->id % table->props[P_NUM]], LK);
-		if (mtx_getval(table, &table->table_mtx, &table->barier) == 0)
-		{
-			mtx_op(table, &table->forks[philo->id % table->props[P_NUM]], ULK);
-			return (1);
-		}
-		print_status(table, philo->id, FORK);
-		mtx_op(table, &table->forks[philo->id - 1], LK);
-		if (mtx_getval(table, &table->table_mtx, &table->barier) == 0)
-		{
-			mtx_op(table, &table->forks[philo->id % table->props[P_NUM]], ULK);
-			mtx_op(table, &table->forks[philo->id - 1], ULK);
-			return (1);
-		}
-		print_status(table, philo->id, FORK);
+		msleep(table, table->props[TTD]);
+		mtx_op(table, &table->forks[philo->id - 1], ULK);
+		return (1);
+	}
+	mtx_op(table, &table->forks[philo->id % table->props[P_NUM]], LK);
+	print_status(table, philo->id, FORK);
+	mtx_op(table, &table->philo_mtx, LK);
+	print_status(table, philo->id, EAT);
+	philo->meal_stamp = gettime_ms();
+	mtx_op(table, &table->philo_mtx, ULK);
+	res = ph_action(table, EAT);
+	philo->meals += 1;
+	mtx_op(table, &table->forks[philo->id - 1], ULK);
+	mtx_op(table, &table->forks[philo->id % table->props[P_NUM]], ULK);
+	return (res);
+}
+
+void	philo_temper(t_table *table, t_philo *philo)
+{
+	if (table->props[P_NUM] % 2 == 0)
+	{
+		if (philo->id % 2 == 0)
+			msleep(table, table->props[TTE] / 2 + 1);
 	}
 	else
 	{
-		mtx_op(table, &table->forks[philo->id - 1], LK);
-		if (mtx_getval(table, &table->table_mtx, &table->barier) == 0)
+		if (philo->id % 2 != 0)
 		{
-			mtx_op(table, &table->forks[philo->id - 1], ULK);
-			return (1);
+			print_status(table, philo->id, THINK);
+			ph_action(table, THINK);
 		}
-		print_status(table, philo->id, FORK);
-		if (table->props[P_NUM] == 1)
-		{
-			mtx_op(table, &table->forks[philo->id - 1], ULK);
-			return (1);
-		}
-		mtx_op(table, &table->forks[philo->id % table->props[P_NUM]], LK);
-		if (mtx_getval(table, &table->table_mtx, &table->barier) == 0)
-		{
-			mtx_op(table, &table->forks[philo->id - 1], ULK);
-			mtx_op(table, &table->forks[philo->id % table->props[P_NUM]], ULK);
-			return (1);
-		}
-		print_status(table, philo->id, FORK);
 	}
-	mtx_op(table, &table->hb_mtx, LK);
-	gettimeofday(&philo->meal_stamp, NULL);
-	philo->meals += 1;
-	mtx_op(table, &table->hb_mtx, ULK);
-	print_status(table, philo->id, EAT);
-	act_res = ph_action(table, EAT);
-	mtx_op(table, &table->forks[philo->id - 1], ULK);
-	mtx_op(table, &table->forks[philo->id % table->props[P_NUM]], ULK);
-	return (act_res);
 }
 
 void	*philo_routine(void *arg)
@@ -146,10 +68,10 @@ void	*philo_routine(void *arg)
 
 	philo = (t_philo *)arg;
 	table = philo->table;
-	philo_wait_start(table, philo);
-	while (mtx_getval(table, &table->table_mtx, &table->barier) != 0)
+	philo_temper(table, philo);
+	while (!is_stopped(table))
 	{
-		if (ph_eat(table, philo) != 0)
+		if (eat(table, philo) != 0)
 			return (NULL);
 		print_status(table, philo->id, SLEEP);
 		if (ph_action(table, SLEEP) != 0)

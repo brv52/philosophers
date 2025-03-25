@@ -24,6 +24,7 @@ static long	ft_atoi(t_table *table, char *str)
 		exit_error(table, "args error");
 	return (res);
 }
+
 static void	init_setup(t_table *table)
 {
 	int	c_idx;
@@ -55,15 +56,32 @@ void	table_create(t_table *table, int argc, char **argv)
 	if (argc == 5)
 		table->props[MEALS] = -1;
 	table->props[TTT] = (table->props[TTD] - table->props[TTE] - table->props[TTS]) / 2;
-	table->barier = 0;
+	table->active = 1;
 	table->philos = malloc(table->props[P_NUM] * sizeof(t_philo));
 	table->forks = malloc(table->props[P_NUM] * sizeof(t_mutex));
+	table->start_stamp = 0;
 	init_setup(table);
 	mtx_op(table, &table->table_mtx, CRT);
-	mtx_op(table, &table->hb_mtx, CRT);
+	mtx_op(table, &table->philo_mtx, CRT);
 	mtx_op(table, &table->print_mtx, CRT);
 	table->t_status = 1;
 }
+
+void	threads_wait(t_table *table)
+{
+	int	c_thread;
+
+	c_thread = 0;
+	if (table->t_status > 1)
+	{
+		while (c_thread < table->props[P_NUM])
+		{
+			pthread_join(table->philos[c_thread].thread, NULL);
+			c_thread += 1;
+		}
+	}
+}
+
 void	destroy_table(t_table *table)
 {
 	int	c_fork;
@@ -75,7 +93,7 @@ void	destroy_table(t_table *table)
 		mtx_op(table, &table->forks[c_fork], DST);
 		c_fork += 1;
 	}
-	mtx_op(table, &table->hb_mtx, DST);
+	mtx_op(table, &table->philo_mtx, DST);
 	mtx_op(table, &table->print_mtx, DST);
 	mtx_op(table, &table->table_mtx, DST);
 	free(table->philos);

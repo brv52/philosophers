@@ -20,6 +20,7 @@ void	mtx_setval(t_table *table, t_mutex *mtx, int *val, int n_val)
 	*val = n_val;
 	mtx_op(table, mtx, ULK);
 }
+
 int	mtx_getval(t_table *table, t_mutex *mtx, int *val)
 {
 	int	res;

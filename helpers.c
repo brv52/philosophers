@@ -20,16 +20,24 @@ void	exit_error(t_table *table, char *msg)
 
 void	print_status(t_table *table, int idx, t_action action)
 {
-	mtx_op(table, &table->print_mtx, LK);
-	if (action == FORK)
-		printf("%ld %d has taken a fork\n", get_time_diff(&table->start_stamp, NULL), idx);
-	else if (action == EAT)
-		printf("%ld %d is eating\n", get_time_diff(&table->start_stamp, NULL), idx);
-	else if (action == SLEEP)
-		printf("%ld %d is sleeping\n", get_time_diff(&table->start_stamp, NULL), idx);
-	else if (action == THINK)
-		printf("%ld %d is thinking\n", get_time_diff(&table->start_stamp, NULL), idx);
-	else
-		printf("%ld %d died\n", get_time_diff(&table->start_stamp, NULL), idx);
-	mtx_op(table, &table->print_mtx, ULK);
+	if (!is_stopped(table) || action == DIE)
+	{
+		mtx_op(table, &table->print_mtx, LK);
+		if (action == FORK)
+			printf("%ld %d has taken a fork\n", gettime_ms() - table->start_stamp, idx);
+		else if (action == EAT)
+			printf("%ld %d is eating\n", gettime_ms() - table->start_stamp, idx);
+		else if (action == SLEEP)
+			printf("%ld %d is sleeping\n", gettime_ms() - table->start_stamp, idx);
+		else if (action == THINK)
+			printf("%ld %d is thinking\n", gettime_ms() - table->start_stamp, idx);
+		else
+			printf("%ld %d died\n", gettime_ms() - table->start_stamp, idx);
+		mtx_op(table, &table->print_mtx, ULK);
+	}
+}
+
+int	is_stopped(t_table *table)
+{
+	return (mtx_getval(table, &table->table_mtx, &table->active) == 0);
 }
